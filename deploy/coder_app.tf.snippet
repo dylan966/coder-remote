@@ -1,0 +1,16 @@
+# deploy/coder_app.tf.snippet — add to the template hosting the workspace
+resource "coder_app" "switcher" {
+  agent_id     = coder_agent.main.id
+  slug         = "switcher"
+  display_name = "Workspace Switcher"
+  url          = "http://localhost:8080"
+  subdomain    = true
+  share        = "owner"
+  order        = -20
+  healthcheck {
+    url       = "http://localhost:8080/api/workspaces"
+    interval  = 10
+    threshold = 30
+  }
+}
+# startup: inject CODER_TOKEN (coder secret) + CODER_URL, run `npm start` in the background.

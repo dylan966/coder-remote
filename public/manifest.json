@@ -1,0 +1,18 @@
+{
+  "id": "/",
+  "name": "Coder Switcher — chat with Claude on mobile",
+  "short_name": "Switcher",
+  "description": "Switch between your Coder workspaces on mobile and chat with the Claude Code in each one via chat bubbles: send messages, send images/files, and view tool calls and screenshots. Desktop still gets a full terminal.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#f0eee6",
+  "background_color": "#f0eee6",
+  "lang": "en",
+  "categories": ["developer", "productivity", "utilities"],
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}
