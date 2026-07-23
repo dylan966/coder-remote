@@ -43,6 +43,15 @@ resource "coder_agent" "main" {
   arch = data.coder_provisioner.me.arch
   os   = "linux"
 
+  # Hide the "VS Code Desktop" button — this hub only runs the switcher, no IDE.
+  display_apps {
+    vscode                 = false
+    vscode_insiders        = false
+    web_terminal           = true
+    ssh_helper             = true
+    port_forwarding_helper = true
+  }
+
   env = {
     CODER_URL         = data.coder_workspace.me.access_url
     CODER_OWNER_NAME  = local.owner_name
@@ -87,7 +96,10 @@ resource "coder_app" "switcher" {
   url          = "http://localhost:8080"
   icon         = "/emojis/1f4ac.png" # 💬
   subdomain    = true
-  share        = "owner"
+  # authenticated: anyone logged into this Coder deployment can open it.
+  # NOTE: the app acts with the OWNER's token — colleagues opening it control the
+  # owner's workspaces and claude sessions, not their own.
+  share        = "authenticated"
   open_in      = "tab"
   order        = -20
   healthcheck {
@@ -107,7 +119,7 @@ resource "coder_script" "token_refresh" {
   display_name = "Token auto-refresh"
   icon         = "/emojis/1f501.png" # 🔁
   cron         = "0 0 4 * * *"       # 6-field (sec min hour dom mon dow): daily 04:00
-  run_on_start = false               # startup.sh already logs in from the secret on boot
+  run_on_start = true                # also refresh on every boot (resets the 7-day clock)
   script       = file("${path.root}/token-refresh.sh")
 }
 
@@ -141,7 +153,7 @@ resource "docker_container" "workspace" {
   name       = "coder-${data.coder_workspace_owner.me.name}-${lower(data.coder_workspace.me.name)}"
   image      = docker_image.base.name
   hostname   = data.coder_workspace.me.name
-  memory     = 2048
+  memory     = 8192
   entrypoint = ["sh", "-c", coder_agent.main.init_script]
 
   env = [

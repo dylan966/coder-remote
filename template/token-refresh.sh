@@ -11,11 +11,16 @@ log() { echo "[token-refresh] $*"; }
 
 command -v coder >/dev/null 2>&1 || { log "coder CLI missing; skip"; exit 0; }
 
-# Need a valid session to mint. On boot, startup.sh already logs in from the secret;
-# if the session lapsed we skip and let the next boot/login handle it.
+# Need a valid session to mint. If not logged in (e.g. this runs on boot before
+# startup.sh, run_on_start=true), bootstrap the login from the SWITCHER_TOKEN secret first.
 if ! coder whoami >/dev/null 2>&1; then
-  log "not authenticated (session lapsed?); skip — startup.sh handles boot login"
-  exit 0
+  if [ -n "${SWITCHER_TOKEN:-}" ] && [ -n "${CODER_URL:-}" ]; then
+    coder login "${CODER_URL}" --token "${SWITCHER_TOKEN}" >/dev/null 2>&1 \
+      && log "bootstrapped login from SWITCHER_TOKEN" \
+      || { log "bootstrap login failed (token expired?); skip"; exit 0; }
+  else
+    log "not authenticated and no SWITCHER_TOKEN; skip"; exit 0
+  fi
 fi
 
 NEW=$(coder tokens create --lifetime 168h --name switcher-auto 2>/dev/null | tail -1 | tr -d '[:space:]')
