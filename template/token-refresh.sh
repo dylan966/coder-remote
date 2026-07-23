@@ -23,7 +23,8 @@ if ! coder whoami >/dev/null 2>&1; then
   fi
 fi
 
-NEW=$(coder tokens create --lifetime 168h --name switcher-auto 2>/dev/null | tail -1 | tr -d '[:space:]')
+# Coder requires unique token names, so timestamp each one (a fixed name collides on the 2nd run).
+NEW=$(coder tokens create --lifetime 168h --name "switcher-auto-$(date +%s)" 2>/dev/null | tail -1 | tr -d '[:space:]')
 if [ -z "${NEW}" ]; then log "token mint failed; keeping current token"; exit 0; fi
 NEWID="${NEW%%-*}"
 
@@ -40,8 +41,9 @@ else
 fi
 unset NEW
 
-# Tidy: remove older auto-minted tokens (they self-expire in 7 days anyway), keep the new one.
-for id in $(coder tokens ls 2>/dev/null | awk '$2=="switcher-auto"{print $1}'); do
+# Tidy: remove older auto-minted tokens (name prefix switcher-auto), keep the new one.
+# Use JSON+jq — the plain table can carry PTY escape noise.
+for id in $(coder tokens ls -o json 2>/dev/null | jq -r '.[] | select(.token_name|startswith("switcher-auto")) | .id' 2>/dev/null); do
   [ "${id}" = "${NEWID}" ] && continue
   coder tokens remove "${id}" >/dev/null 2>&1 || true
 done
