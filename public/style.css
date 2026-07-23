@@ -29,7 +29,10 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); -web
 #main { flex: 1; min-width: 0; background: var(--bg); display: flex; flex-direction: column; height: 100%; }
 
 #hdr { flex: 0 0 auto; display: flex; align-items: center; gap: 9px; padding: 14px 20px; background: var(--bg); font-family: var(--serif); font-size: 17px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#hdr-name { overflow: hidden; text-overflow: ellipsis; }
+#hdr-name { overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; max-width: 40%; }
+#hdr-apps { display: flex; gap: 6px; align-items: center; overflow: hidden; }
+.applink { font-family: var(--sans); font-size: 12px; font-weight: 500; text-decoration: none; color: var(--accent); background: var(--accent-weak); border: 1px solid transparent; border-radius: 999px; padding: 3px 11px; white-space: nowrap; }
+.applink:hover { border-color: var(--accent); background: var(--card); }
 
 #termwrap { flex: 1; min-height: 0; position: relative; padding: 0 16px 16px; }
 .termpane { height: 100%; background: var(--term-bg); padding: 12px; border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; }

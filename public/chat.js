@@ -236,6 +236,31 @@ function newSession() {
 }
 document.getElementById('newsess').addEventListener('click', newSession);
 
+// ---------- 快捷链接(该 workspace 的前端/后端/服务入口)----------
+const linksBtn = document.getElementById('links');
+const linksMenu = document.getElementById('linksmenu');
+let appsCache = null;
+async function loadApps() {
+  if (appsCache) return appsCache;
+  try {
+    const j = await fetch('/api/workspaces').then((r) => r.json());
+    const w = (j.workspaces || []).find((x) => x.name === wsName);
+    appsCache = (w && w.apps) || [];
+  } catch (_) { appsCache = []; }
+  return appsCache;
+}
+(async () => { const apps = await loadApps(); if (apps.length) linksBtn.hidden = false; })(); // 有链接才显示 🔗
+linksBtn.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  if (linksMenu.classList.contains('show')) { linksMenu.classList.remove('show'); return; }
+  const apps = await loadApps();
+  linksMenu.innerHTML = apps.length
+    ? apps.map((a) => '<a href="' + a.url + '" target="_blank" rel="noopener">' + esc(a.name) + '</a>').join('')
+    : '<span class=empty>无快捷链接</span>';
+  linksMenu.classList.add('show');
+});
+document.addEventListener('click', () => linksMenu.classList.remove('show'));
+
 // ---------- Notifications (only fire when the page is hidden, debounced; most useful when installed as a PWA in the background) ----------
 function ensureNotifyPerm() {
   if (!window.Notification) return;

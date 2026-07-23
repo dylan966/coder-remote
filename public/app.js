@@ -25,15 +25,28 @@ function requestNotifPermission() {
 requestNotifPermission();
 document.addEventListener('click', requestNotifPermission, { once: true });
 
+function renderHdrApps() {
+  const el = document.getElementById('hdr-apps'); if (!el) return;
+  el.innerHTML = '';
+  if (!active) return;
+  const w = workspaces.find((x) => x.name === active);
+  (w && w.apps || []).forEach((a) => {
+    const link = document.createElement('a');
+    link.className = 'applink'; link.href = a.url; link.target = '_blank'; link.rel = 'noopener';
+    link.textContent = a.name; link.title = a.url;
+    el.appendChild(link);
+  });
+}
 function updateHdr(name) {
   if (name !== undefined && name !== active) return;
   const nameEl = document.getElementById('hdr-name');
   const dotEl = document.getElementById('hdr-dot');
-  if (!active) { nameEl.textContent = 'No workspace selected'; dotEl.className = 'dot dot-off'; return; }
+  if (!active) { nameEl.textContent = 'No workspace selected'; dotEl.className = 'dot dot-off'; renderHdrApps(); return; }
   nameEl.textContent = active;
   const s = sessions.get(active);
   const open = !!s && s.sock.readyState === 1;
   dotEl.className = 'dot ' + (open ? 'dot-on' : 'dot-off');
+  renderHdrApps();
 }
 
 function makeSession(name) {
@@ -279,7 +292,7 @@ async function refresh() {
   const ws = await getWorkspaces();
   if (ws === null) return;
   if (ws.notLoggedIn) return renderNotLoggedIn();
-  workspaces = ws; renderList(document.getElementById('search').value);
+  workspaces = ws; renderList(document.getElementById('search').value); updateHdr();
   if (pendingWs !== null) { // one-time: on load, auto-open per URL (running only)
     const w = workspaces.find((x) => x.name === pendingWs);
     const target = pendingWs; pendingWs = null;

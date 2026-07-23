@@ -19,14 +19,35 @@ function makeClient(getAuth) {
     return res.status === 204 ? null : res.json();
   }
 
-  /** List all workspaces of the current user (owner:me), each with its agentId (the first agent). */
+  // IDE/terminal apps to omit from the quick-links (we only surface service links).
+  const SKIP_APP_SLUGS = new Set([
+    'code-server', 'cursor', 'vscode', 'vscode-desktop', 'jetbrains', 'jetbrains-gateway',
+    'zed', 'claude', 'claude-code', 'switcher', 'control', 'web-terminal',
+  ]);
+
+  /** List all workspaces of the current user (owner:me), each with its agentId (the first agent)
+   *  and its service quick-links (apps: [{name, url}]). */
   async function listWorkspaces() {
+    const { coderHost } = getAuth();
     const d = await api('/api/v2/workspaces?q=owner:me');
     return (d.workspaces || []).map((w) => {
       let agentId = null;
+      const apps = [];
+      const wsl = (w.name || '').toLowerCase();
+      const owner = (w.owner_name || '').toLowerCase();
       for (const r of (w.latest_build?.resources || []))
-        for (const a of (r.agents || [])) { agentId = agentId || a.id; }
-      return { name: w.name, status: w.latest_build?.status || 'unknown', agentId };
+        for (const a of (r.agents || [])) {
+          agentId = agentId || a.id;
+          for (const app of (a.apps || [])) {
+            if (app.hidden || app.command || SKIP_APP_SLUGS.has(app.slug)) continue; // hidden / terminal-launch / IDE
+            let url = null;
+            if (app.subdomain) url = `https://${app.slug}--${wsl}--${owner}.${coderHost}`;   // wildcard subdomain app
+            else if (app.external && /^https?:\/\//.test(app.url || '')) url = app.url;       // plain external http link
+            if (!url) continue; // skip path-based / non-http (rare for service links)
+            apps.push({ name: app.display_name || app.slug, url });
+          }
+        }
+      return { name: w.name, status: w.latest_build?.status || 'unknown', agentId, apps };
     });
   }
 
