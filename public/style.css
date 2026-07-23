@@ -33,6 +33,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); -web
 
 #termwrap { flex: 1; min-height: 0; position: relative; padding: 0 16px 16px; }
 .termpane { height: 100%; background: var(--term-bg); padding: 12px; border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; }
+.terminner { height: 100%; width: 100%; }
 
 /* Embedded chat-bubble view (mobile): when showchat is set, fill the main area and hide terminal/header/old input bar */
 #chatframe { display: none; width: 100%; border: 0; }

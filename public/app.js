@@ -38,6 +38,9 @@ function updateHdr(name) {
 
 function makeSession(name) {
   const el = document.createElement('div'); el.className = 'termpane'; el.style.height = '100%'; el.style.display = 'none';
+  // xterm renders into a padding-free inner box so FitAddon measures a clean area
+  // (opening directly onto the padded .termpane made fit ~half a row too tall → clipped).
+  const inner = document.createElement('div'); inner.className = 'terminner'; el.appendChild(inner);
   document.getElementById('termwrap').appendChild(el);
   const term = new Terminal({
     cursorBlink: true,
@@ -51,7 +54,7 @@ function makeSession(name) {
   const fit = new FitAddon(); term.loadAddon(fit);
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const sock = new WebSocket(`${proto}://${location.host}/api/pty?ws=${encodeURIComponent(name)}&width=80&height=24`);
-  const s = { el, term, sock, fit, opened: false }; sessions.set(name, s);
+  const s = { el, inner, term, sock, fit, opened: false }; sessions.set(name, s);
   // Copy/paste: claude runs the TUI in mouse mode, so drag-select needs Shift held.
   // Then Cmd/Ctrl+C copies the selection (only when there is one, so Ctrl+C still
   // interrupts otherwise); Cmd/Ctrl+V pastes the clipboard into the PTY.
@@ -78,7 +81,7 @@ function makeSession(name) {
 // Open the terminal the first time its pane becomes visible (correct cell metrics), then fit.
 function openTerm(s) {
   if (s.opened) return;
-  s.term.open(s.el); s.opened = true;
+  s.term.open(s.inner); s.opened = true;
 }
 // Fit the terminal to its container. Deferred to the next frames so layout has settled
 // after display:none -> block (otherwise fit measures a stale/zero size → tiny 1/4 term).
