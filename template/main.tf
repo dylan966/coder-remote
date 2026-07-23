@@ -98,6 +98,20 @@ resource "coder_app" "switcher" {
 }
 
 # ------------------------------------------------------------------------------
+# Token auto-refresh —— daily cron: while the session is valid, mint a fresh 168h
+# token, re-login, and overwrite the switcher-token secret so the token never hits
+# the server's 7-day cap (as long as the hub isn't offline > 7 days).
+# ------------------------------------------------------------------------------
+resource "coder_script" "token_refresh" {
+  agent_id     = coder_agent.main.id
+  display_name = "Token auto-refresh"
+  icon         = "/emojis/1f501.png" # 🔁
+  cron         = "0 4 * * *"         # daily 04:00, well within the 7-day window
+  run_on_start = false               # startup.sh already logs in from the secret on boot
+  script       = file("${path.root}/token-refresh.sh")
+}
+
+# ------------------------------------------------------------------------------
 # Base image —— built locally on the server during provisioning (build/
 # context is uploaded along with the template).
 # ------------------------------------------------------------------------------

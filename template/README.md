@@ -78,3 +78,12 @@ echo "$CODER_URL / ${SWITCHER_TOKEN:+token set}"   # whether env injection took 
 | `main.tf` | Self-contained: agent (injects CODER_URL) + switcher coder_app (subdomain/owner) + lightweight image + container |
 | `startup.sh` | clone/pull this repo -> npm ci -> `coder login` -> start `node src/server.js` via tmux |
 | `build/Dockerfile` | debian-slim + Node20 + git + coder CLI (no JDK/Maven/python) |
+| `token-refresh.sh` | run daily by a `coder_script` cron: mints a fresh 168h token, re-logins, updates the secret — so the token never hits the server's 7-day cap |
+
+## Token auto-renewal
+
+The server caps token lifetime at 168h (7 days). A `coder_script` cron (`token-refresh.sh`)
+runs daily inside the hub: while the current session is valid it mints a fresh token,
+re-logins, and overwrites the `switcher-token` secret. So the token is self-renewing and
+needs no manual attention — **unless the hub is offline for more than 7 days**, in which case
+all tokens expire and you re-run the one-time step 3 above (create token + set secret + restart).
