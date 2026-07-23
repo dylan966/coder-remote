@@ -17,11 +17,20 @@ body { background:var(--bg); color:var(--text); font-family:var(--sans); -webkit
 #top .dot { width:8px; height:8px; border-radius:50%; background:#b9b4a7; flex:0 0 auto; }
 #top .dot.on { background:#6a9a5b; box-shadow:0 0 0 3px #6a9a5b22; }
 #ws { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-#sesspick { margin-left:auto; max-width:52%; font-family:var(--sans); font-size:12px; font-weight:400; color:var(--muted); background:transparent; border:1px solid transparent; border-radius:8px; padding:3px 6px; outline:none; text-overflow:ellipsis; }
-#sesspick:not(:disabled):hover { border-color:var(--border); background:var(--card); color:var(--text); }
-#sesspick:disabled { -webkit-appearance:none; appearance:none; }
-#newsess { flex:0 0 auto; width:30px; height:30px; margin-left:6px; border-radius:8px; border:1px solid var(--border); background:var(--card); color:var(--muted); font-size:18px; line-height:1; cursor:pointer; }
-#newsess:active { transform:scale(.92); background:var(--accent-weak); }
+#sessbtn { margin-left:auto; max-width:56%; flex:0 0 auto; font-family:var(--sans); font-size:12px; font-weight:500; color:var(--text); background:var(--card); border:1px solid var(--border); border-radius:999px; padding:4px 12px; cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#sessbtn:active { transform:scale(.96); }
+/* session tree panel(project → session)*/
+#sesspanel { display:none; position:fixed; top:52px; right:12px; left:12px; max-width:520px; margin-left:auto; z-index:20; background:var(--card); border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow); padding:6px; max-height:70vh; overflow-y:auto; }
+#sesspanel.show { display:block; }
+.sp-new { padding:10px 12px; border-radius:8px; color:var(--accent); font-size:14px; font-weight:600; cursor:pointer; }
+.sp-new:active { background:var(--accent-weak); }
+.sp-proj { padding:9px 12px 4px; font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.03em; }
+.sp-sess { display:flex; align-items:center; gap:6px; padding:8px 10px; border-radius:8px; }
+.sp-sess.cur { background:var(--accent-weak); }
+.sp-sess .sp-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; cursor:pointer; }
+.sp-sess .sp-acts { flex:0 0 auto; display:flex; gap:2px; }
+.sp-sess .sp-acts button { width:30px; height:30px; border:0; background:none; color:var(--muted); font-size:14px; border-radius:7px; cursor:pointer; }
+.sp-sess .sp-acts button:active { background:var(--border); }
 #links { flex:0 0 auto; width:30px; height:30px; margin-left:6px; border-radius:8px; border:1px solid var(--border); background:var(--card); font-size:14px; line-height:1; cursor:pointer; }
 #links:active { transform:scale(.92); }
 #linksmenu { display:none; position:fixed; top:52px; right:12px; z-index:20; background:var(--card); border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow); padding:5px; min-width:180px; max-width:80vw; }
@@ -123,8 +132,9 @@ body { background:var(--bg); color:var(--text); font-family:var(--sans); -webkit
 #send:active { transform:scale(.94); }
 </style>
 </head><body>
-<div id=top><span class=dot id=dot></span><span id=ws>—</span><button id=links type=button title="Quick links" aria-label="Quick links" hidden>🔗</button><select id=sesspick title="Switch session"></select><button id=newsess type=button title="New session" aria-label="New session">＋</button></div>
+<div id=top><span class=dot id=dot></span><span id=ws>—</span><button id=links type=button title="Quick links" aria-label="Quick links" hidden>🔗</button><button id=sessbtn type=button title="Sessions">会话 ▾</button></div>
 <div id=linksmenu hidden></div>
+<div id=sesspanel hidden></div>
 <div id=log></div>
 <div id=composer>
   <div id=ac hidden></div>

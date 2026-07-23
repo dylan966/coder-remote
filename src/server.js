@@ -101,6 +101,29 @@ const server = http.createServer(async (req, res) => {
       const files = out.split('\n').map((s) => s.trim()).filter(Boolean);
       return json({ files });
     }
+    if (u.pathname === '/api/session/rename' && req.method === 'POST') {
+      const wsName = u.searchParams.get('ws');
+      let b; try { b = JSON.parse(await readBody(req, 64 * 1024)); } catch (_) { return json({ error: 'bad request' }, 400); }
+      const id = /^[0-9a-fA-F-]{8,}$/.test(b.id || '') ? b.id : '';
+      if (!wsName || !id) return json({ error: 'bad params' }, 400);
+      const nb = Buffer.from(String(b.name || ''), 'utf8').toString('base64'); // name is arbitrary → base64
+      const cmd = `mkdir -p ~/.switcher; F=~/.switcher/names.json; [ -f "$F" ] || echo '{}' >"$F"; ` +
+        `N=$(printf %s '${nb}' | base64 -d); jq --arg i '${id}' --arg n "$N" '.[$i]=$n' "$F" >"$F.t" && mv "$F.t" "$F"`;
+      await execFileP('coder', ['ssh', wsName, '--', cmd], { timeout: 20000 });
+      return json({ ok: true });
+    }
+    if (u.pathname === '/api/session/delete' && req.method === 'POST') {
+      const wsName = u.searchParams.get('ws');
+      let b; try { b = JSON.parse(await readBody(req, 64 * 1024)); } catch (_) { return json({ error: 'bad request' }, 400); }
+      const id = /^[0-9a-fA-F-]{8,}$/.test(b.id || '') ? b.id : '';
+      if (!wsName || !id) return json({ error: 'bad params' }, 400);
+      const t = 'cl-' + id.replace(/[^0-9a-fA-F]/g, '').slice(0, 8);
+      // remove the session's transcript(s) + kill its tmux + drop its name override
+      const cmd = `rm -f ~/.claude/projects/*/'${id}'.jsonl 2>/dev/null; tmux kill-session -t ${t} 2>/dev/null; ` +
+        `F=~/.switcher/names.json; [ -f "$F" ] && jq --arg i '${id}' 'del(.[$i])' "$F" >"$F.t" 2>/dev/null && mv "$F.t" "$F"; true`;
+      await execFileP('coder', ['ssh', wsName, '--', cmd], { timeout: 20000 });
+      return json({ ok: true });
+    }
     if (u.pathname === '/api/push/key') return json({ key: push.getPublicKey(), enabled: push.isEnabled() });
     if (u.pathname === '/api/push/subscribe' && req.method === 'POST') {
       let b; try { b = JSON.parse(await readBody(req, 64 * 1024)); } catch (_) { return json({ error: 'bad request' }, 400); }
@@ -179,8 +202,12 @@ const LAUNCH_B64 = Buffer.from(LAUNCH_SH, 'utf8').toString('base64');
 function ptyCommand({ session, cwd, fork, nameB64 }) {
   const sid = /^[0-9a-fA-F-]{8,}$/.test(session || '') ? session : '';
   if (!sid && !cwd) return config.claudeCmd; // main / default click — untouched
-  const tmux = sid ? ('cl-' + sid.replace(/[^0-9a-fA-F]/g, '').slice(0, 8)) : 'claude';
   const safeCwd = /^\/[A-Za-z0-9._/-]+$/.test(cwd || '') ? cwd : '';       // validated abs path
+  const sid8 = sid.replace(/[^0-9a-fA-F]/g, '').slice(0, 8);
+  const cwdKey = safeCwd.replace(/[^A-Za-z0-9]/g, '').slice(-14);
+  // tmux name: fork → clf-<orig> (distinct from the original's tmux); resume → cl-<id>;
+  // create (cwd only) → cln-<cwdhash> (distinct from main's "claude").
+  const tmux = fork ? ('clf-' + sid8) : (sid ? ('cl-' + sid8) : (safeCwd ? 'cln-' + cwdKey : 'claude'));
   const nb = /^[A-Za-z0-9+/=]+$/.test(nameB64 || '') ? nameB64 : '';       // base64 charset only
   const exportsBlk = [
     safeCwd && `export SC_CWD='${safeCwd}'`,

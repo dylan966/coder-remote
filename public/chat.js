@@ -149,8 +149,7 @@ function render(ev) {
   switch (ev.kind) {
     case 'title': {
       document.title = 'Chat · ' + ev.title;
-      const opt = pick && pick.selectedOptions[0];
-      if (opt && ev.title) opt.textContent = ev.title;   // Update the live title of the selected session
+      if (ev.title && !freshMode) sessbtn.textContent = ev.title + ' ▾';   // live title of the current session
       break;
     }
     case 'user':
@@ -183,58 +182,103 @@ function render(ev) {
   }
 }
 
-// ---------- sessions picker ----------
-const pick = document.getElementById('sesspick');
+// ---------- sessions: project → session tree ----------
+const sessbtn = document.getElementById('sessbtn');
+const sesspanel = document.getElementById('sesspanel');
+let sessions = [];
 let currentSession = new URLSearchParams(location.search).get('session') || null;
-let freshMode = false; // After starting a new session: follow the "latest" session file (even if still empty)
+let currentCwd = '';
+let currentIsMain = !currentSession;   // default click = main session (shares the "claude" tmux with the desktop terminal)
+let freshMode = false;                 // create/fork: follow the newest session file until it's adopted
+let ptyExtra = {};                     // {cwd, fork} for the create/fork PTY launch
+
+function closePanel() { sesspanel.classList.remove('show'); }
+sessbtn.addEventListener('click', (e) => { e.stopPropagation(); if (sesspanel.classList.contains('show')) closePanel(); else { buildPanel(); sesspanel.classList.add('show'); } });
+document.addEventListener('click', closePanel);
+sesspanel.addEventListener('click', (e) => e.stopPropagation());
+
+function resetChat() {
+  log.innerHTML = ''; stepById.clear(); uploadReadIds.clear();
+  if (typingEl && typingEl.parentNode) typingEl.remove();
+  typingEl = null; clearTimeout(typingTimer); stick = true;
+}
+function reconnectAll() { closeChat(); closePty(); resetChat(); openChat(); openPty(); }
+
+function curLabel() {
+  if (freshMode) return 'new…';
+  const c = sessions.find((s) => s.id === currentSession);
+  return c ? c.title : (currentIsMain ? 'main' : (currentSession || 'session'));
+}
 function renderSessions(list) {
-  pick.innerHTML = '';
-  if (!list.length) {
-    const o = document.createElement('option'); o.textContent = '(no sessions)'; pick.appendChild(o); pick.disabled = true;
-    if (!log.querySelector('.empty')) {
-      const h = document.createElement('div'); h.className = 'cmdout empty';
-      h.innerHTML = '<pre>This workspace has no conversations yet.\nClaude may not be running — just send a message to try, or tap ＋ at the top right to start a new session.</pre>';
-      add(h);
-    }
+  sessions = list || [];
+  if (!sessions.length) {
+    sessbtn.textContent = '(no sessions) ▾';
+    if (!log.querySelector('.empty')) { const h = document.createElement('div'); h.className = 'cmdout empty'; h.innerHTML = '<pre>This workspace has no conversations yet.\nTap 会话 ▾ → ＋ to start one, or just send a message.</pre>'; add(h); }
+    if (sesspanel.classList.contains('show')) buildPanel();
     return;
   }
   const e = log.querySelector('.empty'); if (e) e.remove();
-  if (!currentSession) currentSession = list[0].id; // The server tails list[0] by default
-  pick.disabled = list.length < 2;
-  list.forEach((s) => {
-    const o = document.createElement('option');
-    o.value = s.id; o.textContent = s.title;
-    if (s.id === currentSession) o.selected = true;
-    pick.appendChild(o);
+  if (freshMode) { const nw = sessions[0]; currentSession = nw.id; currentCwd = nw.cwd; currentIsMain = !!nw.main; freshMode = false; ptyExtra = {}; } // adopt newest after create/fork
+  if (!currentSession) { const m = sessions.find((s) => s.main) || sessions[0]; currentSession = m.id; currentCwd = m.cwd; currentIsMain = !!m.main; }
+  sessbtn.textContent = curLabel() + ' ▾';
+  if (sesspanel.classList.contains('show')) buildPanel();
+}
+function buildPanel() {
+  sesspanel.innerHTML = '';
+  const nw = document.createElement('div'); nw.className = 'sp-new'; nw.textContent = '＋ 新建会话'; nw.addEventListener('click', onNew); sesspanel.appendChild(nw);
+  const groups = {};
+  sessions.forEach((s) => { const p = s.project || '~'; (groups[p] = groups[p] || []).push(s); });
+  Object.keys(groups).forEach((proj) => {
+    const h = document.createElement('div'); h.className = 'sp-proj'; h.textContent = proj; sesspanel.appendChild(h);
+    groups[proj].forEach((s) => sesspanel.appendChild(sessRow(s)));
   });
 }
-pick.addEventListener('change', (e) => switchSession(e.target.value));
-
-function resetChat() {
-  log.innerHTML = '';
-  stepById.clear();
-  uploadReadIds.clear();
-  if (typingEl && typingEl.parentNode) typingEl.remove();
-  typingEl = null; clearTimeout(typingTimer);
-  stick = true;
+function iconBtn(label, title, fn) { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.title = title; b.addEventListener('click', (e) => { e.stopPropagation(); fn(); }); return b; }
+function sessRow(s) {
+  const row = document.createElement('div'); row.className = 'sp-sess' + (s.id === currentSession ? ' cur' : '');
+  const nm = document.createElement('span'); nm.className = 'sp-name'; nm.textContent = s.title + (s.main ? ' ·主' : '');
+  nm.addEventListener('click', () => { switchSession(s); closePanel(); });
+  row.appendChild(nm);
+  const acts = document.createElement('span'); acts.className = 'sp-acts';
+  acts.appendChild(iconBtn('⑂', 'fork', () => forkSession(s)));
+  acts.appendChild(iconBtn('✎', 'rename', () => renameSession(s)));
+  if (!s.main) acts.appendChild(iconBtn('🗑', 'delete', () => deleteSession(s)));
+  row.appendChild(acts);
+  return row;
 }
-function switchSession(id) {
-  if (!id || id === currentSession) return;
-  currentSession = id; freshMode = false;
-  closeChat();
-  resetChat();
-  openChat();
+function switchSession(s) {
+  if (s.id === currentSession && !freshMode) return;
+  currentSession = s.id; currentCwd = s.cwd || ''; currentIsMain = !!s.main; freshMode = false; ptyExtra = {};
+  reconnectAll();
 }
-// New session: have Claude in the workspace /clear to start a brand-new conversation, then follow the latest session file
-function newSession() {
-  if (!(pty && pty.readyState === 1)) { alert('Connection not ready, try again shortly'); return; }
-  ptySendText('/clear');
-  resetChat();
-  currentSession = null; freshMode = true;
-  const d = document.createElement('div'); d.className = 'cmdout'; d.innerHTML = '<pre>Started a new session — send a message to begin</pre>'; add(d);
-  setTimeout(() => { closeChat(); openChat(); }, 1000); // Wait for the new session file to be created
+function onNew() {
+  const proj = (prompt('项目名(在 ~ 下建同名目录并开新会话):', '') || '').trim();
+  if (!proj) return;
+  if (!/^[A-Za-z0-9._-]+$/.test(proj)) { alert('项目名只能用 字母 / 数字 / . _ -'); return; }
+  closePanel();
+  currentSession = null; currentIsMain = false; freshMode = true; currentCwd = '/home/coder/' + proj; ptyExtra = { cwd: currentCwd };
+  reconnectAll();
+  setTimeout(() => { closeChat(); openChat(); }, 2500); // re-enumerate to adopt the new session
 }
-document.getElementById('newsess').addEventListener('click', newSession);
+function forkSession(s) {
+  closePanel();
+  currentSession = null; currentIsMain = false; freshMode = true; currentCwd = s.cwd || ''; ptyExtra = { cwd: s.cwd, fork: s.id };
+  reconnectAll();
+  setTimeout(() => { closeChat(); openChat(); }, 2500);
+}
+async function renameSession(s) {
+  const nm = (prompt('显示名:', s.title) || '').trim(); if (!nm) return;
+  try { await fetch('/api/session/rename?ws=' + encodeURIComponent(wsName), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: s.id, name: nm }) }); } catch (_) {}
+  closeChat(); openChat(); // re-enumerate to pick up the new name
+}
+async function deleteSession(s) {
+  if (s.main) return;
+  if (!confirm('删除会话「' + s.title + '」?')) return;
+  try { await fetch('/api/session/delete?ws=' + encodeURIComponent(wsName), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: s.id }) }); } catch (_) {}
+  closePanel();
+  if (s.id === currentSession) { const m = sessions.find((x) => x.main); currentSession = m ? m.id : null; currentCwd = m ? m.cwd : ''; currentIsMain = !!(m && m.main); freshMode = false; ptyExtra = {}; reconnectAll(); }
+  else { closeChat(); openChat(); }
+}
 
 // ---------- 快捷链接(该 workspace 的前端/后端/服务入口)----------
 const linksBtn = document.getElementById('links');
@@ -300,7 +344,7 @@ function maybeNotify() {
   if (document.visibilityState === 'visible') return; // Don't disturb while it's being viewed
   clearTimeout(notifyTimer);
   notifyTimer = setTimeout(() => {
-    const title = (pick.selectedOptions[0] && pick.selectedOptions[0].textContent) || wsName;
+    const title = (typeof curLabel === 'function' ? curLabel() : '') || wsName;
     const opts = { body: 'Claude has a new reply', tag: 'chat-' + wsName, renotify: true, icon: '/icon.svg' };
     try {
       if (navigator.serviceWorker && navigator.serviceWorker.ready) navigator.serviceWorker.ready.then((reg) => reg.showNotification('🔔 ' + title, opts)).catch(() => {});
@@ -339,12 +383,22 @@ function openChat() {
   chat.onerror = () => {}; // Let onclose handle reconnection uniformly
 }
 let ptyTimer = null, ptyBackoff = 1000;
+function closePty() { clearTimeout(ptyTimer); if (pty) { pty._intentional = true; try { pty.close(); } catch (_) {} } }
 function openPty() {
   clearTimeout(ptyTimer);
-  pty = new WebSocket(`${proto}://${location.host}/api/pty?ws=${encodeURIComponent(wsName)}&width=80&height=24`);
+  let url = `${proto}://${location.host}/api/pty?ws=${encodeURIComponent(wsName)}&width=80&height=24`;
+  if (!currentIsMain) {
+    // non-main session: attach its own tmux (resume / create / fork). Main stays param-less →
+    // the shared "claude" tmux, so mobile chat and the desktop terminal are the same conversation.
+    if (ptyExtra.fork) url += '&session=' + encodeURIComponent(ptyExtra.fork) + '&fork=1';
+    else if (currentSession) url += '&session=' + encodeURIComponent(currentSession);
+    const cw = ptyExtra.cwd || currentCwd;
+    if (cw) url += '&cwd=' + encodeURIComponent(cw);
+  }
+  pty = new WebSocket(url); pty._intentional = false;
   pty.onopen = () => { ptyBackoff = 1000; };
   pty.onmessage = () => {}; // Used only to send input; terminal output is ignored (bubbles come from the transcript)
-  pty.onclose = () => { ptyTimer = setTimeout(openPty, ptyBackoff); ptyBackoff = Math.min(ptyBackoff * 2, 15000); };
+  pty.onclose = () => { if (pty._intentional) return; ptyTimer = setTimeout(openPty, ptyBackoff); ptyBackoff = Math.min(ptyBackoff * 2, 15000); };
   pty.onerror = () => {};
 }
 if (wsName) { openChat(); openPty(); }
