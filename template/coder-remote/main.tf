@@ -56,6 +56,7 @@ resource "coder_agent" "main" {
     CODER_URL         = data.coder_workspace.me.access_url
     CODER_OWNER_NAME  = local.owner_name
     CODER_OWNER_EMAIL = data.coder_workspace_owner.me.email
+    SWITCHER_SELF     = data.coder_workspace.me.name # hide the hub itself from its own list
   }
 
   startup_script = file("${path.root}/startup.sh")

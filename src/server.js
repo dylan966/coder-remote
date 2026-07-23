@@ -52,7 +52,11 @@ const server = http.createServer(async (req, res) => {
   let u;
   try { u = new URL(req.url, 'http://x'); } catch (e) { return json({ error: 'bad request' }, 400); }
   try {
-    if (u.pathname === '/api/workspaces') return json({ workspaces: await client.listWorkspaces() });
+    if (u.pathname === '/api/workspaces') {
+      const self = process.env.SWITCHER_SELF; // the hub's own workspace — hide it from the list
+      const list = await client.listWorkspaces();
+      return json({ workspaces: self ? list.filter((w) => w.name !== self) : list });
+    }
     if (u.pathname === '/api/start' && req.method === 'POST') { await client.startWorkspace(u.searchParams.get('ws')); return json({ ok: true }); }
     if (u.pathname === '/api/upload' && req.method === 'POST') {
       // receive base64 → temp file → coder cp into the target workspace's ~/.switcher-uploads/, returning the absolute path inside the workspace.
