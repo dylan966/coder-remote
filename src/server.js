@@ -191,7 +191,7 @@ want = os.environ.get('SESSION', '').strip()
 out = []
 for f in glob.glob(base + '/*/*.jsonl'):
     if os.sep + 'subagents' + os.sep in f: continue
-    ai = cust = lp = None; ids = set(); n = 0
+    ai = cust = lp = cwd = None; ids = set(); n = 0
     try:
         with open(f, encoding='utf-8', errors='replace') as fh:
             for line in fh:
@@ -205,6 +205,7 @@ for f in glob.glob(base + '/*/*.jsonl'):
                 elif t == 'last-prompt': lp = o.get('lastPrompt') or lp
                 elif t == 'user' or t == 'assistant':
                     n += 1
+                    if o.get('cwd'): cwd = o.get('cwd')   # claude records the cwd on each turn → project
                     if t == 'assistant':
                         mid = (o.get('message') or {}).get('id')
                         if mid: ids.add(mid)
@@ -212,7 +213,7 @@ for f in glob.glob(base + '/*/*.jsonl'):
     if n == 0: continue
     title = cust or ai or lp or '(untitled)'
     if len(title) > 60: title = title[:57] + '...'
-    out.append({'id': os.path.basename(f)[:-6], 'title': title, 'n': n, 'mtime': os.path.getmtime(f), '_ids': sorted(ids), '_f': f})
+    out.append({'id': os.path.basename(f)[:-6], 'title': title, 'n': n, 'mtime': os.path.getmtime(f), 'cwd': cwd or '', '_ids': sorted(ids), '_f': f})
 out.sort(key=lambda s: len(s['_ids']))
 keep = []
 for i, s in enumerate(out):
@@ -223,7 +224,22 @@ for i, s in enumerate(out):
     if not covered: keep.append(s)
 keep.sort(key=lambda s: s['mtime'], reverse=True)
 files = {s['id']: s['_f'] for s in keep}
-listing = [{'id': s['id'], 'title': s['title'], 'n': s['n'], 'mtime': int(s['mtime'])} for s in keep]
+# switcher-side display-name overrides (claude has no post-hoc rename CLI)
+names = {}
+try:
+    with open(os.path.expanduser('~/.switcher/names.json')) as nf: names = json.load(nf)
+except Exception: names = {}
+home = os.path.expanduser('~')
+# main = newest session whose cwd == $HOME (the default click-in), else newest overall; can't be deleted.
+home_sess = [s for s in keep if s.get('cwd') == home]
+pool = home_sess if home_sess else keep
+main_id = max(pool, key=lambda s: s['mtime'])['id'] if pool else None
+def _proj(c):
+    if not c: return '(unknown)'
+    if c == home: return '~'
+    return os.path.basename(c.rstrip('/')) or c
+listing = [{'id': s['id'], 'title': names.get(s['id']) or s['title'], 'n': s['n'], 'mtime': int(s['mtime']),
+            'cwd': s.get('cwd', ''), 'project': _proj(s.get('cwd', '')), 'main': s['id'] == main_id} for s in keep]
 print('##SESSIONS##' + json.dumps(listing, ensure_ascii=False)); sys.stdout.flush()
 target = files.get(want) if want else None
 if os.environ.get('FRESH'):  # new session: follow the "latest" file (even if it has no messages yet)
