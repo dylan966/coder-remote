@@ -9,14 +9,25 @@ document.getElementById('menu').onclick = () => app.classList.toggle('open');
 
 const Terminal = window.Terminal;
 const FitAddon = window.FitAddon.FitAddon;
-const sessions = new Map();   // name -> {el, term, sock, fit}
-let active = null;
+// Desktop session model: a "session" is a claude conversation (one ~/.claude/projects/*/<id>.jsonl).
+// The terminal is keyed per session (ws + session id), so several sessions of a workspace can stay
+// open at once. main = the shared param-less "claude" tmux (same tmux the mobile chat view attaches).
+const sessions = new Map();      // sessKey(ws,sid) -> {el, inner, term, sock, fit, opened, ws, sid, cwd, isMain, fork, label}
+let active = null;               // active sessKey
+let activeWs = null;             // workspace name of the active session
+let activeSess = null;           // active session descriptor from the tree (null = plain "main")
+const sessCache = new Map();     // ws -> [ {id,title,project,cwd,main,...} ] (enumerated on demand)
+const expanded = new Set();      // ws names currently expanded in the sidebar tree (desktop)
 let pendingWs = new URLSearchParams(location.search).get('ws'); // on refresh, auto-open per URL
+function sessKey(ws, sid) { return ws + '\n' + (sid || ''); }
+function searchVal() { const s = document.getElementById('search'); return s ? s.value : ''; }
 
-function notifyDone(name) {
+function notifyDone(s) {
   if (!(window.Notification && Notification.permission === 'granted')) return;
-  if (name === active && document.hasFocus()) return;
-  new Notification('🔔 ' + name, { body: 'claude activity (done / awaiting input)', tag: 'ws-' + name, renotify: true });
+  const key = sessKey(s.ws, s.sid);
+  if (key === active && document.hasFocus()) return;
+  const label = s.label && s.label !== 'main' ? s.ws + ' · ' + s.label : s.ws;
+  new Notification('🔔 ' + label, { body: 'claude activity (done / awaiting input)', tag: 'ws-' + key, renotify: true });
 }
 
 function requestNotifPermission() {
@@ -28,8 +39,8 @@ document.addEventListener('click', requestNotifPermission, { once: true });
 function renderHdrApps() {
   const el = document.getElementById('hdr-apps'); if (!el) return;
   el.innerHTML = '';
-  if (!active) return;
-  const w = workspaces.find((x) => x.name === active);
+  if (!activeWs) return;
+  const w = workspaces.find((x) => x.name === activeWs);
   (w && w.apps || []).forEach((a) => {
     const link = document.createElement('a');
     link.className = 'applink'; link.href = a.url; link.target = '_blank'; link.rel = 'noopener';
@@ -37,19 +48,49 @@ function renderHdrApps() {
     el.appendChild(link);
   });
 }
-function updateHdr(name) {
-  if (name !== undefined && name !== active) return;
+
+// ---- top-right session switcher: switches only among the CURRENT project's sessions ----
+function curSessLabel() {
+  if (!activeWs) return '';
+  if (activeSess && activeSess.fresh) return activeSess.title || 'new…';
+  if (activeSess && !activeSess.main) return activeSess.title || 'session';
+  return 'main';
+}
+function activeProject() {
+  const list = sessCache.get(activeWs) || [];
+  if (activeSess && activeSess.project) return activeSess.project;
+  if (activeSess && activeSess.cwd) { const s = list.find((x) => x.cwd === activeSess.cwd); if (s) return s.project || '~'; }
+  const m = list.find((x) => x.main); return m ? (m.project || '~') : '~';
+}
+function currentProjectSessions() {
+  const list = sessCache.get(activeWs) || [];
+  const proj = activeProject();
+  return list.filter((s) => (s.project || '~') === proj);
+}
+function renderHdrSess() {
+  const btn = document.getElementById('hdr-sess'); const menu = document.getElementById('hdr-sessmenu');
+  if (!btn || !menu) return;
+  if (!activeWs || isMobile()) { btn.style.display = 'none'; menu.classList.remove('show'); return; }
+  btn.style.display = '';
+  btn.textContent = curSessLabel() + ' ▾';
+}
+function updateHdr() {
   const nameEl = document.getElementById('hdr-name');
   const dotEl = document.getElementById('hdr-dot');
-  if (!active) { nameEl.textContent = 'No workspace selected'; dotEl.className = 'dot dot-off'; renderHdrApps(); return; }
-  nameEl.textContent = active;
+  if (!activeWs) { nameEl.textContent = 'No workspace selected'; dotEl.className = 'dot dot-off'; renderHdrApps(); renderHdrSess(); return; }
+  nameEl.textContent = activeWs;
   const s = sessions.get(active);
   const open = !!s && s.sock.readyState === 1;
   dotEl.className = 'dot ' + (open ? 'dot-on' : 'dot-off');
-  renderHdrApps();
+  renderHdrApps(); renderHdrSess();
 }
 
-function makeSession(name) {
+// opts: { sid, cwd, isMain, fork, label }. main (isMain) connects to the shared param-less
+// "claude" tmux; a non-main session routes &session/&cwd(/&fork) so the backend launches/attaches
+// its own cl-<id8> tmux — mirrors the (verified) mobile chat.js PTY model exactly.
+function makeSession(ws, opts) {
+  opts = opts || {};
+  const key = sessKey(ws, opts.isMain ? '' : (opts.fork ? 'fork:' + opts.fork : (opts.sid || (opts.cwd ? 'new:' + opts.cwd : ''))));
   const el = document.createElement('div'); el.className = 'termpane'; el.style.height = '100%'; el.style.display = 'none';
   // xterm renders into a padding-free inner box so FitAddon measures a clean area
   // (opening directly onto the padded .termpane made fit ~half a row too tall → clipped).
@@ -66,8 +107,16 @@ function makeSession(name) {
   // later re-activate. We open it in activate(), once the pane is visible. (openTerm below.)
   const fit = new FitAddon(); term.loadAddon(fit);
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const sock = new WebSocket(`${proto}://${location.host}/api/pty?ws=${encodeURIComponent(name)}&width=80&height=24`);
-  const s = { el, inner, term, sock, fit, opened: false }; sessions.set(name, s);
+  let url = `${proto}://${location.host}/api/pty?ws=${encodeURIComponent(ws)}&width=80&height=24`;
+  if (!opts.isMain) {
+    if (opts.fork) url += '&session=' + encodeURIComponent(opts.fork) + '&fork=1';
+    else if (opts.sid) url += '&session=' + encodeURIComponent(opts.sid);
+    if (opts.cwd) url += '&cwd=' + encodeURIComponent(opts.cwd);
+  }
+  const sock = new WebSocket(url);
+  const name = key;
+  const s = { el, inner, term, sock, fit, opened: false, ws, sid: opts.isMain ? '' : (opts.sid || ''), cwd: opts.cwd || '', isMain: !!opts.isMain, fork: opts.fork || '', label: opts.label || (opts.isMain ? 'main' : '') };
+  sessions.set(key, s);
   // Copy/paste: claude runs the TUI in mouse mode, so drag-select needs Shift held.
   // Then Cmd/Ctrl+C copies the selection (only when there is one, so Ctrl+C still
   // interrupts otherwise); Cmd/Ctrl+V pastes the clipboard into the PTY.
@@ -82,11 +131,11 @@ function makeSession(name) {
     }
     return true;
   });
-  sock.addEventListener('open', () => { if (s.opened) fitSoon(s); updateHdr(name); });
-  sock.addEventListener('close', () => updateHdr(name));
+  sock.addEventListener('open', () => { if (s.opened) fitSoon(s); updateHdr(); });
+  sock.addEventListener('close', () => updateHdr());
   sock.onmessage = (e) => term.write(e.data);
   term.onData((d) => sock.readyState === 1 && sock.send(JSON.stringify({ data: d })));
-  term.onBell(() => notifyDone(name));
+  term.onBell(() => notifyDone(s));
   el.addEventListener('click', () => s.term.focus());
   return s;
 }
@@ -121,29 +170,49 @@ try { document.fonts && document.fonts.ready.then(() => { const s = active && se
 
 function isMobile() { return window.innerWidth <= 768; }
 
-function activate(name) {
-  active = name;
-  try { history.replaceState(null, '', location.pathname + '?ws=' + encodeURIComponent(name)); } catch (_) {}
+// activate(ws)           → open the workspace's "main" session (shared claude tmux)
+// activate(ws, session)  → open a specific session from the tree (main / existing / fresh create-fork)
+function activate(ws, sess) {
+  activeWs = ws; activeSess = sess || null;
   if (isMobile()) {
-    // Mobile: embedded chat-bubble view (chat.html), no terminal; input handled by the chat page's own PTF
+    // Mobile: embedded chat-bubble view (chat.html) owns the session tree; the sidebar just picks a ws.
+    active = sessKey(ws, ''); // keep `active` a real key for header/notify parity
     const cf = document.getElementById('chatframe');
-    if (cf.getAttribute('data-ws') !== name) { cf.setAttribute('data-ws', name); cf.src = '/chat.html?ws=' + encodeURIComponent(name); }
+    const src = '/chat.html?ws=' + encodeURIComponent(ws) + (sess && !sess.main && sess.id ? '&session=' + encodeURIComponent(sess.id) : '');
+    if (cf.getAttribute('data-src') !== src) { cf.setAttribute('data-src', src); cf.setAttribute('data-ws', ws); cf.src = src; }
     app.classList.add('showchat');
     app.classList.remove('open');
-    renderList(); updateHdr();
+    renderList(searchVal()); updateHdr();
     return;
   }
-  // Desktop: regular terminal
+  // Desktop: per-session terminal. Compute this session's launch options + stable key.
+  const isMain = !sess || !!sess.main;
+  const fresh = !!(sess && sess.fresh);
+  const opts = {
+    isMain,
+    sid: fresh ? '' : (sess && !sess.main ? sess.id : ''),
+    cwd: sess ? (sess.cwd || '') : '',
+    fork: fresh && sess.fork ? sess.fork : '',
+    label: isMain ? 'main' : (sess && (sess.title || sess.id)) || 'session',
+  };
+  const key = sessKey(ws, isMain ? '' : (opts.fork ? 'fork:' + opts.fork : (opts.sid || (opts.cwd ? 'new:' + opts.cwd : ''))));
+  active = key;
+  try {
+    const q = '?ws=' + encodeURIComponent(ws) + (opts.sid ? '&session=' + encodeURIComponent(opts.sid) : '');
+    history.replaceState(null, '', location.pathname + q);
+  } catch (_) {}
   app.classList.remove('showchat');
   const cf = document.getElementById('chatframe');
-  cf.removeAttribute('data-ws'); cf.src = 'about:blank';   // disconnect the embedded page
-  sessions.forEach((s, n) => { if (n !== name) s.el.style.display = 'none'; });
-  const s = sessions.get(name) || makeSession(name);
+  cf.removeAttribute('data-ws'); cf.removeAttribute('data-src'); cf.src = 'about:blank';   // disconnect the embedded page
+  sessions.forEach((sv, n) => { if (n !== key) sv.el.style.display = 'none'; });
+  const s = sessions.get(key) || makeSession(ws, opts);
   s.el.style.display = 'block';
   openTerm(s);  // open now that the pane is visible → correct cell metrics (avoids 1/4-size)
   s.term.focus();
   fitSoon(s);   // defer: pane just switched from display:none, layout not settled yet
-  renderList(); updateHdr();
+  renderList(searchVal()); updateHdr();
+  // Pull this workspace's session list (for the tree + top-right switcher) if not cached yet.
+  if (!sessCache.has(ws)) loadSessions(ws).then(() => { renderList(searchVal()); updateHdr(); });
 }
 
 function fitActiveIfMobile() {
@@ -155,7 +224,7 @@ function fitActiveIfMobile() {
 let lastMobile = isMobile();
 window.addEventListener('resize', () => {
   const m = isMobile();
-  if (m !== lastMobile) { lastMobile = m; if (active) activate(active); } // across breakpoint: switch terminal/chat
+  if (m !== lastMobile) { lastMobile = m; if (activeWs) activate(activeWs, activeSess); } // across breakpoint: switch terminal/chat
   else fitActiveIfMobile();
 });
 
@@ -208,6 +277,30 @@ function sendToActive(data) {
   });
 })();
 
+// Top-right session switcher: a dropdown of the CURRENT project's sessions only (cross-project /
+// cross-workspace navigation lives in the sidebar tree). Built on open so it always reflects state.
+(function initHdrSess() {
+  const btn = document.getElementById('hdr-sess'); const menu = document.getElementById('hdr-sessmenu');
+  if (!btn || !menu) return;
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (menu.classList.contains('show')) { menu.classList.remove('show'); return; }
+    menu.innerHTML = '';
+    const inProj = currentProjectSessions();
+    if (!inProj.length) { const it = document.createElement('div'); it.className = 'hs-item'; it.textContent = '(no other sessions)'; menu.appendChild(it); }
+    inProj.forEach((s) => {
+      const cur = (activeSess && activeSess.id === s.id) || (!activeSess && s.main);
+      const it = document.createElement('div'); it.className = 'hs-item' + (cur ? ' cur' : '');
+      it.textContent = s.title + (s.main ? ' ·main' : '');
+      it.onclick = () => { menu.classList.remove('show'); activate(activeWs, s); };
+      menu.appendChild(it);
+    });
+    menu.classList.add('show');
+  });
+  document.addEventListener('click', () => menu.classList.remove('show'));
+  menu.addEventListener('click', (e) => e.stopPropagation());
+})();
+
 let workspaces = [];
 let stoppedOpen = false; // "Stopped" group collapsed by default
 function makeLi(w) {
@@ -215,16 +308,28 @@ function makeLi(w) {
   const dot = document.createElement('span');
   dot.className = 'dot ' + (w.status === 'running' ? 'dot-on' : 'dot-off');
   li.appendChild(dot);
-  li.appendChild(document.createTextNode(w.name));
+  const nm = document.createElement('span'); nm.className = 'ws-name'; nm.textContent = w.name; li.appendChild(nm);
   const cls = [];
   if (w.status !== 'running') cls.push('stopped');
-  if (w.name === active) cls.push('active');
+  if (w.name === activeWs) cls.push('active');
   li.className = cls.join(' ');
+  // Desktop: running workspaces get a caret that expands into their project → session tree.
+  if (w.status === 'running' && !isMobile()) {
+    const cv = document.createElement('span'); cv.className = 'ws-chev' + (expanded.has(w.name) ? ' open' : ''); cv.textContent = '▸';
+    cv.onclick = (e) => { e.stopPropagation(); toggleExpand(w.name); };
+    li.appendChild(cv);
+  }
   li.onclick = () => {
-    if (w.status === 'running') return activate(w.name);
-    if (confirm(`Start workspace "${w.name}"?`)) startAndAttach(w.name);
+    if (w.status !== 'running') { if (confirm(`Start workspace "${w.name}"?`)) startAndAttach(w.name); return; }
+    if (isMobile()) return activate(w.name);
+    if (!expanded.has(w.name)) toggleExpand(w.name); // reveal its sessions...
+    activate(w.name);                                // ...and open the main session
   };
   return li;
+}
+function appendWs(ul, w) {
+  ul.appendChild(makeLi(w));
+  if (w.status === 'running' && !isMobile() && expanded.has(w.name)) sessSubRows(w.name).forEach((r) => ul.appendChild(r));
 }
 function renderList(filter = '') {
   const ul = document.getElementById('list'); ul.innerHTML = '';
@@ -232,20 +337,94 @@ function renderList(filter = '') {
   const ranked = fuzzyRank(workspaces.map((w) => w.name), filter);
 
   if (filter) { // when searching, show all matches flat (incl. stopped), no grouping
-    ranked.forEach((name) => ul.appendChild(makeLi(byName.get(name))));
+    ranked.forEach((name) => appendWs(ul, byName.get(name)));
     return;
   }
   const running = ranked.filter((n) => byName.get(n).status === 'running');
   const stopped = ranked.filter((n) => byName.get(n).status !== 'running');
-  running.forEach((name) => ul.appendChild(makeLi(byName.get(name))));
+  running.forEach((name) => appendWs(ul, byName.get(name)));
   if (stopped.length) {
     const hdr = document.createElement('li');
     hdr.className = 'group-hdr' + (stoppedOpen ? ' open' : '');
     hdr.innerHTML = '<span>Stopped</span><span class=count>' + stopped.length + '</span><span class=chev>▸</span>';
-    hdr.onclick = () => { stoppedOpen = !stoppedOpen; renderList(document.getElementById('search').value); };
+    hdr.onclick = () => { stoppedOpen = !stoppedOpen; renderList(searchVal()); };
     ul.appendChild(hdr);
-    if (stoppedOpen) stopped.forEach((name) => ul.appendChild(makeLi(byName.get(name))));
+    if (stoppedOpen) stopped.forEach((name) => appendWs(ul, byName.get(name)));
   }
+}
+
+// ---- sidebar session tree (desktop): workspace → project → session ----
+async function toggleExpand(ws) {
+  if (expanded.has(ws)) { expanded.delete(ws); renderList(searchVal()); return; }
+  expanded.add(ws);
+  renderList(searchVal());                                    // shows a "loading…" row if not cached yet
+  if (!sessCache.has(ws)) { await loadSessions(ws); renderList(searchVal()); }
+}
+async function loadSessions(ws, force) {
+  if (sessCache.has(ws) && !force) return sessCache.get(ws);
+  try {
+    const j = await fetch('/api/sessions?ws=' + encodeURIComponent(ws)).then((r) => r.json());
+    sessCache.set(ws, j.sessions || []);
+  } catch (_) { if (!sessCache.has(ws)) sessCache.set(ws, []); }
+  return sessCache.get(ws);
+}
+async function refreshSessions(ws) { await loadSessions(ws, true); renderList(searchVal()); updateHdr(); }
+function subBtn(label, title, fn) {
+  const b = document.createElement('button'); b.type = 'button'; b.className = 'subact'; b.textContent = label; b.title = title;
+  b.onclick = (e) => { e.stopPropagation(); fn(); }; return b;
+}
+function sessSubRows(ws) {
+  const rows = [];
+  const list = sessCache.get(ws);
+  const nw = document.createElement('li'); nw.className = 'sub sub-new'; nw.textContent = '＋ New session';
+  nw.onclick = (e) => { e.stopPropagation(); newSession(ws); }; rows.push(nw);
+  if (!list) { const li = document.createElement('li'); li.className = 'sub loading'; li.textContent = 'loading…'; rows.push(li); return rows; }
+  if (!list.length) { const li = document.createElement('li'); li.className = 'sub empty'; li.textContent = '(no conversations yet)'; rows.push(li); return rows; }
+  const groups = {};
+  list.forEach((s) => { const p = s.project || '~'; (groups[p] = groups[p] || []).push(s); });
+  Object.keys(groups).forEach((proj) => {
+    const h = document.createElement('li'); h.className = 'sub sub-proj'; h.textContent = proj; rows.push(h);
+    groups[proj].forEach((s) => rows.push(sessSubRow(ws, s)));
+  });
+  return rows;
+}
+function sessSubRow(ws, s) {
+  const key = sessKey(ws, s.main ? '' : s.id);
+  const li = document.createElement('li'); li.className = 'sub sub-sess' + (key === active ? ' active' : '');
+  const nm = document.createElement('span'); nm.className = 'sub-name'; nm.textContent = s.title + (s.main ? ' ·main' : '');
+  li.appendChild(nm);
+  const acts = document.createElement('span'); acts.className = 'sub-acts';
+  acts.appendChild(subBtn('⑂', 'fork', () => forkSession(ws, s)));
+  acts.appendChild(subBtn('✎', 'rename', () => renameSession(ws, s)));
+  if (!s.main) acts.appendChild(subBtn('🗑', 'delete', () => deleteSession(ws, s)));
+  li.appendChild(acts);
+  li.onclick = (e) => { e.stopPropagation(); activate(ws, s); };
+  return li;
+}
+function newSession(ws) {
+  const proj = (prompt('Project name (creates ~/<name> and starts a new session):', '') || '').trim();
+  if (!proj) return;
+  if (!/^[A-Za-z0-9._-]+$/.test(proj)) { alert('Project name: letters / digits / . _ - only'); return; }
+  activate(ws, { fresh: true, cwd: '/home/coder/' + proj, title: 'new…' });
+  setTimeout(() => refreshSessions(ws), 2600); // re-enumerate so the created session appears in the tree
+}
+function forkSession(ws, s) {
+  activate(ws, { fresh: true, cwd: s.cwd, fork: s.id, title: 'fork…' });
+  setTimeout(() => refreshSessions(ws), 2600);
+}
+async function renameSession(ws, s) {
+  const nm = (prompt('Display name:', s.title) || '').trim(); if (!nm) return;
+  try { await fetch('/api/session/rename?ws=' + encodeURIComponent(ws), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: s.id, name: nm }) }); } catch (_) {}
+  refreshSessions(ws);
+}
+async function deleteSession(ws, s) {
+  if (s.main) return;
+  if (!confirm('Delete session "' + s.title + '"?')) return;
+  try { await fetch('/api/session/delete?ws=' + encodeURIComponent(ws), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: s.id }) }); } catch (_) {}
+  const key = sessKey(ws, s.id); const ps = sessions.get(key);
+  if (ps) { try { ps.sock.close(); } catch (_) {} try { ps.term.dispose(); } catch (_) {} ps.el.remove(); sessions.delete(key); }
+  if (key === active) activate(ws); // its pane was showing → fall back to main
+  refreshSessions(ws);
 }
 
 async function getWorkspaces() {

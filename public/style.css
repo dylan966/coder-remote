@@ -65,6 +65,37 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); -web
 #list .group-hdr.open .chev { transform: rotate(90deg); }
 #list li.stopped .dot { opacity: .7; }
 
+/* workspace row: name grows, caret sits at the right and rotates when expanded */
+#list li .ws-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#list li .ws-chev { flex: 0 0 auto; color: var(--muted); font-size: 11px; padding: 2px 4px; border-radius: 6px; transition: transform .15s; }
+#list li .ws-chev:hover { background: var(--border); }
+#list li .ws-chev.open { transform: rotate(90deg); }
+
+/* session tree sub-rows (desktop) */
+#list li.sub { padding: 6px 10px 6px 26px; font-size: 12.5px; border-radius: 8px; gap: 6px; }
+#list li.sub.sub-proj { color: var(--muted); font-size: 11px; font-weight: 600; text-transform: none; padding-top: 8px; cursor: default; }
+#list li.sub.sub-proj:hover { background: transparent; }
+#list li.sub.loading, #list li.sub.empty { color: var(--muted); font-style: italic; cursor: default; }
+#list li.sub.loading:hover, #list li.sub.empty:hover { background: transparent; }
+#list li.sub.sub-new { color: var(--accent); font-weight: 500; }
+#list li.sub.sub-sess { padding-left: 34px; }
+#list li.sub.sub-sess.active { background: var(--accent-weak); font-weight: 600; }
+#list li.sub .sub-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#list li.sub .sub-acts { display: none; gap: 2px; flex: 0 0 auto; }
+#list li.sub.sub-sess:hover .sub-acts { display: flex; }
+#list li.sub .subact { border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; line-height: 1; padding: 2px 4px; border-radius: 6px; }
+#list li.sub .subact:hover { background: var(--border); color: var(--text); }
+
+/* top-right in-project session switcher */
+#hdr-sesswrap { position: relative; flex: 0 1 auto; }
+#hdr-sess { font-family: var(--sans); font-size: 12.5px; font-weight: 500; color: var(--text); background: var(--card); border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px; cursor: pointer; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#hdr-sess:hover { border-color: var(--accent); }
+#hdr-sessmenu { display: none; position: absolute; top: calc(100% + 6px); left: 0; z-index: 12; min-width: 200px; max-width: 300px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); padding: 6px; }
+#hdr-sessmenu.show { display: block; }
+#hdr-sessmenu .hs-item { font-family: var(--sans); font-size: 13px; font-weight: 400; padding: 8px 10px; border-radius: 8px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#hdr-sessmenu .hs-item:hover { background: var(--card); }
+#hdr-sessmenu .hs-item.cur { background: var(--accent-weak); font-weight: 600; }
+
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; background: var(--stopped); }
 .dot-on { background: var(--running); box-shadow: 0 0 0 3px #6a9a5b22; }
 .dot-off { background: var(--stopped); }
