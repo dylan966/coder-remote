@@ -49,36 +49,6 @@ else
 fi
 unset TOKEN
 
-# ---- 3b. claude workspace (this hub also serves ?ws=coder-remote as a claude session) ----
-# The switcher's PTY command (config.claudeCmd) attaches `tmux new-session -A -s claude
-# /home/coder/.start-claude.sh`, so provide that launcher: it runs claude in bypass mode
-# under /home/coder (~). Auth comes from the claude-token secret (CLAUDE_CODE_OAUTH_TOKEN),
-# injected automatically since this is the owner's workspace. Default model: opus[1m].
-cat >/home/coder/.start-claude.sh <<'EOSH'
-#!/usr/bin/env bash
-cd /home/coder
-export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
-# Pre-trust the folder + skip the dangerous-mode prompt so unattended launch doesn't hang.
-CJ="$HOME/.claude.json"; [ -f "$CJ" ] || echo '{}' >"$CJ"
-# hasCompletedOnboarding skips the global first-run wizard (theme picker etc.);
-# the project block pre-trusts the folder. Both are needed for an unattended launch.
-jq '.hasCompletedOnboarding = true | .projects["/home/coder"] = ((.projects["/home/coder"] // {}) + {hasTrustDialogAccepted:true, hasCompletedProjectOnboarding:true})' "$CJ" >"$CJ.tmp" 2>/dev/null && mv "$CJ.tmp" "$CJ"
-mkdir -p "$HOME/.claude"; SJ="$HOME/.claude/settings.json"; [ -f "$SJ" ] || echo '{}' >"$SJ"
-jq '. + {skipDangerousModePermissionPrompt:true, theme:"dark", model:"opus[1m]", statusLine:{type:"command", command:"node /opt/claude-hud/dist/index.js"}}' "$SJ" >"$SJ.tmp" 2>/dev/null && mv "$SJ.tmp" "$SJ"
-for _i in $(seq 1 30); do command -v claude >/dev/null 2>&1 && break; sleep 1; done
-# Resume the latest conversation if any, else start fresh. Always bypass permissions.
-if compgen -G "$HOME/.claude/projects/-home-coder/*.jsonl" >/dev/null 2>&1; then
-  # Drop a possibly-stale lastSessionId (set on abnormal exit / non-resumable one-shots)
-  # so --continue picks the newest resumable session by history instead of a dead pointer.
-  jq 'del(.projects["/home/coder"].lastSessionId)' "$CJ" >"$CJ.tmp" 2>/dev/null && mv "$CJ.tmp" "$CJ"
-  exec claude --dangerously-skip-permissions --continue
-else
-  exec claude --dangerously-skip-permissions
-fi
-EOSH
-chmod +x /home/coder/.start-claude.sh
-log "wrote /home/coder/.start-claude.sh (claude bypass @ /home/coder/projects/init)"
-
 # ---- 4. Start the service (tmux, idempotent: skip if :8080 already in use) ----
 if ss -tln 2>/dev/null | grep -q ':8080'; then
     log "switcher already on :8080, skipping start"

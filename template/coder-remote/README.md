@@ -28,7 +28,7 @@ no need to re-push the template**.
 
 ```bash
 # 1. Push the template (run from repo root, -d points to this directory)
-coder templates push coder-remote -d template --yes
+coder templates push coder-remote -d template/coder-remote --yes
 
 # 2. Create the workspace
 coder create --template coder-remote coder-remote --yes

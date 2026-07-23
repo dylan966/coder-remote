@@ -1,9 +1,8 @@
 # syntax=docker/dockerfile:1.6
 #
-# coder-remote hub —— always-on lightweight workspace, runs only coder-switcher (Node).
-# No JDK/Maven/python needed: the transcript enumeration script (SESS_PY) runs on the
-# **target** workspace via `coder ssh`; the hub only proxies. So the image only needs
-# Node + git + coder CLI + basic tools.
+# scratch —— a general claude work workspace (blank; for starting new projects).
+# Full toolchain: Node 20 + python3 + ripgrep + uv + claude-code + claude-hud + code-server.
+# No switcher service here (that's the coder-remote hub's job) — this box is for doing work.
 #
 # Built automatically during server provisioning (main.tf's docker_image points at ./build).
 
@@ -12,11 +11,11 @@ FROM debian:bookworm-slim
 ARG DEBIAN_FRONTEND=noninteractive
 ARG TARGETARCH
 
-# ---- OS base tools (base64/tar/ss etc. come with coreutils/procps/iproute2) ----
+# ---- OS base + build tooling ---------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl wget gnupg sudo \
         git jq tmux less procps iproute2 openssh-client \
-        ripgrep python3 \
+        ripgrep python3 python3-venv build-essential pkg-config \
         locales tzdata \
     && sed -i 's/^# *\(en_US.UTF-8\)/\1/' /etc/locale.gen \
     && locale-gen \
@@ -29,26 +28,27 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g npm@11 \
     && node --version && npm --version
-# npm pinned to @11: npm@12 requires Node >=22 and would fail the build with
-# EBADENGINE on Node 20.
 
-# ---- coder CLI (installs the version matching the current server, used by the
-# `coder ssh` the switcher shells out to) ------
+# ---- coder CLI -----------------------------------------------------------------
 RUN curl -fsSL https://coder.gmaster888.com/install.sh | sh \
     && coder version || true
 
-# ---- Claude Code (this hub doubles as a claude workspace: ?ws=coder-remote) ----
+# ---- Claude Code ---------------------------------------------------------------
 RUN npm install -g @anthropic-ai/claude-code \
     && (claude --version || true)
 
-# ---- uv / uvx (run MCP servers + python tooling for claude; manages its own python) ----
+# ---- uv / uvx (MCP servers + python tooling; manages its own python) -----------
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh \
     && uv --version && uvx --version
 
-# ---- claude-hud (statusline HUD → node /opt/claude-hud/dist/index.js) ----
+# ---- claude-hud (statusline HUD → node /opt/claude-hud/dist/index.js) ----------
 RUN git clone --depth 1 https://github.com/jarrodwatts/claude-hud /opt/claude-hud \
     && cd /opt/claude-hud && npm ci && npm run build \
     && test -f dist/index.js && echo "claude-hud built"
+
+# ---- code-server (VS Code in the browser) --------------------------------------
+RUN curl -fsSL https://code-server.dev/install.sh | sh \
+    && code-server --version | head -1
 
 # ---- coder user ----------------------------------------------------------------
 ARG USERNAME=coder

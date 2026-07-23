@@ -8,7 +8,7 @@
 # The hub clones this repo on startup.
 #
 # One-time setup (run on Mac, connected to coder.gmaster888.com):
-#   coder templates push coder-remote -d template --yes    # run from repo root, -d points here
+#   coder templates push coder-remote -d template/coder-remote --yes   # run from repo root
 #   coder create --template coder-remote coder-remote --yes
 #   coder tokens create --lifetime 168h                     # 168h = server max lifetime
 #   printf %s '<token>' | coder secret create switcher-token --env SWITCHER_TOKEN
@@ -152,7 +152,7 @@ resource "docker_container" "workspace" {
   name       = "coder-${data.coder_workspace_owner.me.name}-${lower(data.coder_workspace.me.name)}"
   image      = docker_image.base.name
   hostname   = data.coder_workspace.me.name
-  memory     = 8192
+  memory     = 2048
   entrypoint = ["sh", "-c", coder_agent.main.init_script]
 
   env = [
