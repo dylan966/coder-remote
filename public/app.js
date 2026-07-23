@@ -45,10 +45,13 @@ function makeSession(name) {
     fontFamily: 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace',
     theme: { background: '#262624', foreground: '#e8e6de', cursor: '#d97757', cursorAccent: '#262624', selectionBackground: '#d9775740' },
   });
-  const fit = new FitAddon(); term.loadAddon(fit); term.open(el);
+  // NOTE: do NOT term.open(el) here — the pane is display:none, so xterm would measure
+  // a hidden element and cache wrong cell metrics → the terminal renders ~1/4 size until a
+  // later re-activate. We open it in activate(), once the pane is visible. (openTerm below.)
+  const fit = new FitAddon(); term.loadAddon(fit);
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const sock = new WebSocket(`${proto}://${location.host}/api/pty?ws=${encodeURIComponent(name)}&width=80&height=24`);
-  const s = { el, term, sock, fit }; sessions.set(name, s);
+  const s = { el, term, sock, fit, opened: false }; sessions.set(name, s);
   // Copy/paste: claude runs the TUI in mouse mode, so drag-select needs Shift held.
   // Then Cmd/Ctrl+C copies the selection (only when there is one, so Ctrl+C still
   // interrupts otherwise); Cmd/Ctrl+V pastes the clipboard into the PTY.
@@ -63,7 +66,7 @@ function makeSession(name) {
     }
     return true;
   });
-  sock.addEventListener('open', () => { fitSoon(s); updateHdr(name); });
+  sock.addEventListener('open', () => { if (s.opened) fitSoon(s); updateHdr(name); });
   sock.addEventListener('close', () => updateHdr(name));
   sock.onmessage = (e) => term.write(e.data);
   term.onData((d) => sock.readyState === 1 && sock.send(JSON.stringify({ data: d })));
@@ -72,13 +75,22 @@ function makeSession(name) {
   return s;
 }
 
+// Open the terminal the first time its pane becomes visible (correct cell metrics), then fit.
+function openTerm(s) {
+  if (s.opened) return;
+  s.term.open(s.el); s.opened = true;
+}
 // Fit the terminal to its container. Deferred to the next frames so layout has settled
 // after display:none -> block (otherwise fit measures a stale/zero size → tiny 1/4 term).
 function fitSession(s) {
-  if (!s) return;
+  if (!s || !s.opened) return;
   try { s.fit.fit(); if (s.sock.readyState === 1) s.sock.send(JSON.stringify({ height: s.term.rows, width: s.term.cols })); } catch (_) {}
 }
-function fitSoon(s) { requestAnimationFrame(() => requestAnimationFrame(() => fitSession(s))); }
+// rAF (layout) + a delayed pass (fonts/slow layout) so the first fit lands correctly.
+function fitSoon(s) {
+  requestAnimationFrame(() => requestAnimationFrame(() => fitSession(s)));
+  setTimeout(() => fitSession(s), 150);
+}
 // Re-fit whenever the terminal area resizes (window, sidebar toggle, address-bar changes).
 try {
   const ro = new ResizeObserver(() => {
@@ -88,6 +100,8 @@ try {
   });
   ro.observe(document.getElementById('termwrap'));
 } catch (_) {}
+// Once web fonts are ready, cell metrics may change → re-fit the active terminal.
+try { document.fonts && document.fonts.ready.then(() => { const s = active && sessions.get(active); if (s && !isMobile()) fitSession(s); }); } catch (_) {}
 
 function isMobile() { return window.innerWidth <= 768; }
 
@@ -110,6 +124,7 @@ function activate(name) {
   sessions.forEach((s, n) => { if (n !== name) s.el.style.display = 'none'; });
   const s = sessions.get(name) || makeSession(name);
   s.el.style.display = 'block';
+  openTerm(s);  // open now that the pane is visible → correct cell metrics (avoids 1/4-size)
   s.term.focus();
   fitSoon(s);   // defer: pane just switched from display:none, layout not settled yet
   renderList(); updateHdr();
