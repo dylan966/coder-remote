@@ -321,11 +321,17 @@ sys.stdout.flush()
 os.execvp('tail', ['tail', '-n', '1500', '-F', target])  # only pull the last 1500 lines, so very long sessions aren't too heavy to start
 `;
 const SESS_PY_B64 = Buffer.from(SESS_PY, 'utf8').toString('base64');
+// Write SESS_PY to a file on the target via `coder ssh` (arg, not PTY stdin — no MAX_CANON
+// 4096-byte line limit). The PTY then just runs the short `python3 ~/.switcher/sess.py`.
+// (Piping the whole base64 as one PTY line truncated it once SESS_PY grew past ~4KB.)
+async function ensureSessPy(ws) {
+  await execFileP('coder', ['ssh', ws, '--', `mkdir -p ~/.switcher && printf %s '${SESS_PY_B64}' | base64 -d > ~/.switcher/sess.py`], { timeout: 20000 });
+}
 // session id allows only hex digits and hyphens; validate before interpolating into env, to prevent injection.
 function chatCommand(sessionId, fresh) {
   const s = /^[0-9a-fA-F-]{8,}$/.test(sessionId || '') ? sessionId : '';
   const f = fresh ? '1' : '';
-  return `printf %s '${SESS_PY_B64}' | base64 -d | SESSION='${s}' FRESH='${f}' python3`;
+  return `SESSION='${s}' FRESH='${f}' python3 ~/.switcher/sess.py`;
 }
 
 // /api/chat: tail the target workspace's claude transcript, parse it line by line into bubble events, and forward them to the frontend.
@@ -353,6 +359,8 @@ chatWss.on('connection', async (fe, req) => {
   try {
     const agentId = await resolveAgent(fe, name);
     if (!agentId || feClosed) return;
+    try { await ensureSessPy(name); } catch (_) {} // write the enumerator file (best-effort)
+    if (feClosed) return;
     pty = client.openPty({ agentId, width: 200, height: 50, command: chatCommand(session, fresh) });
     pty.onError(() => { try { fe.close(1011); } catch (_) {} });
     pty.onClose(() => fe.close());
@@ -420,6 +428,8 @@ async function startWatcher(ws) {
     push.notify(ws, { title: 'Claude · ' + (p.title || ws), body: p.text || 'Turn complete', tag: 'turn-' + ws, url: '/?ws=' + encodeURIComponent(ws) });
   };
   try {
+    try { await ensureSessPy(ws); } catch (_) {} // write the enumerator file before tailing
+    if (w.stopped) return;
     w.pty = client.openPty({ agentId, width: 200, height: 50, command: chatCommand(null, false) });
     w.pty.onError(() => {});
     w.pty.onClose(() => { if (!w.stopped) { watchers.delete(ws); } }); // resync will restart it
