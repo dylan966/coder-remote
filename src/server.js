@@ -154,12 +154,54 @@ async function resolveAgent(fe, name) {
 }
 
 // /api/pty: terminal attaches to the claude tmux session (both the desktop terminal and mobile chat input go through this).
+// Self-contained per-session claude launcher (env-driven, base64'd through the PTY like SESS_PY).
+// Works on any workspace without relying on its own .start-claude.sh. Only used for opening a
+// SPECIFIC session / create / fork; the default (main) click keeps using config.claudeCmd.
+const LAUNCH_SH = `#!/usr/bin/env bash
+set -uo pipefail
+CWD="\${SC_CWD:-$HOME}"
+mkdir -p "$CWD" 2>/dev/null; cd "$CWD" 2>/dev/null || cd "$HOME"
+export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
+CJ="$HOME/.claude.json"; [ -f "$CJ" ] || echo '{}' >"$CJ"
+jq --arg d "$CWD" '.hasCompletedOnboarding=true | .projects[$d]=((.projects[$d]//{})+{hasTrustDialogAccepted:true,hasCompletedProjectOnboarding:true})' "$CJ" >"$CJ.t" 2>/dev/null && mv "$CJ.t" "$CJ"
+mkdir -p "$HOME/.claude"; SJ="$HOME/.claude/settings.json"; [ -f "$SJ" ] || echo '{}' >"$SJ"
+jq '. + {skipDangerousModePermissionPrompt:true, theme:(.theme//"dark")}' "$SJ" >"$SJ.t" 2>/dev/null && mv "$SJ.t" "$SJ"
+for _i in $(seq 1 30); do command -v claude >/dev/null 2>&1 && break; sleep 1; done
+ARGS=(--dangerously-skip-permissions)
+if [ -n "\${SC_NAME_B64:-}" ]; then N="$(printf %s "$SC_NAME_B64" | base64 -d 2>/dev/null)"; [ -n "$N" ] && ARGS+=(--name "$N"); fi
+if [ -n "\${SC_RESUME:-}" ]; then ARGS+=(--resume "$SC_RESUME"); [ -n "\${SC_FORK:-}" ] && ARGS+=(--fork-session); fi
+exec claude "\${ARGS[@]}"
+`;
+const LAUNCH_B64 = Buffer.from(LAUNCH_SH, 'utf8').toString('base64');
+
+/** Build the PTY tmux command. No session/cwd → the workspace's own launcher (unchanged).
+ *  A specific session/cwd → the self-contained LAUNCH_SH in a per-session tmux `cl-<id8>`. */
+function ptyCommand({ session, cwd, fork, nameB64 }) {
+  const sid = /^[0-9a-fA-F-]{8,}$/.test(session || '') ? session : '';
+  if (!sid && !cwd) return config.claudeCmd; // main / default click — untouched
+  const tmux = sid ? ('cl-' + sid.replace(/[^0-9a-fA-F]/g, '').slice(0, 8)) : 'claude';
+  const safeCwd = /^\/[A-Za-z0-9._/-]+$/.test(cwd || '') ? cwd : '';       // validated abs path
+  const nb = /^[A-Za-z0-9+/=]+$/.test(nameB64 || '') ? nameB64 : '';       // base64 charset only
+  const exportsBlk = [
+    safeCwd && `export SC_CWD='${safeCwd}'`,
+    sid && `export SC_RESUME='${sid}'`,
+    fork && 'export SC_FORK=1',
+    nb && `export SC_NAME_B64='${nb}'`,
+  ].filter(Boolean).join('\n');
+  const b64 = Buffer.from(exportsBlk + '\n' + LAUNCH_SH, 'utf8').toString('base64');
+  return `tmux new-session -A -s ${tmux} bash -lc "printf %s '${b64}' | base64 -d | bash" \\; set -t ${tmux} status off`;
+}
+
 ptyWss.on('connection', async (fe, req) => {
   let u;
   try { u = new URL(req.url, 'http://x'); } catch (e) { fe.close(1008); return; }
   const name = u.searchParams.get('ws');
   const width = parseInt(u.searchParams.get('width'), 10) || 100;
   const height = parseInt(u.searchParams.get('height'), 10) || 30;
+  const session = u.searchParams.get('session');
+  const cwd = u.searchParams.get('cwd');
+  const fork = u.searchParams.get('fork');
+  const nameB64 = u.searchParams.get('name'); // base64 display name (create/fork)
 
   let pty = null;
   let feClosed = false;
@@ -170,7 +212,7 @@ ptyWss.on('connection', async (fe, req) => {
   try {
     const agentId = await resolveAgent(fe, name);
     if (!agentId || feClosed) return;
-    pty = client.openPty({ agentId, width, height, command: config.claudeCmd });
+    pty = client.openPty({ agentId, width, height, command: ptyCommand({ session, cwd, fork, nameB64 }) });
     pty.onError(() => { try { fe.close(1011); } catch (_) {} });
     pty.onData((s) => { if (fe.readyState === fe.OPEN) fe.send(s); });     // Coder → frontend (text)
     pty.onClose(() => fe.close());
