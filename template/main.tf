@@ -96,10 +96,9 @@ resource "coder_app" "switcher" {
   url          = "http://localhost:8080"
   icon         = "/emojis/1f4ac.png" # 💬
   subdomain    = true
-  # authenticated: anyone logged into this Coder deployment can open it.
-  # NOTE: the app acts with the OWNER's token — colleagues opening it control the
-  # owner's workspaces and claude sessions, not their own.
-  share        = "authenticated"
+  # owner: only the logged-in owner can open it. The app acts with the owner's token
+  # and lists the owner's workspaces, so it must stay owner-only (not shared).
+  share        = "owner"
   open_in      = "tab"
   order        = -20
   healthcheck {

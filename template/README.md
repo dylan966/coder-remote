@@ -14,11 +14,10 @@ no need to re-push the template**.
 - **Backend proxy**: all Coder calls (REST + PTY/chat WebSocket + `coder ssh`) are made
   server-side inside the hub; the browser only talks to the hub over the same origin ->
   unaffected by Coder not allowing CORS.
-- **Auth**: `coder_app share=authenticated` —— anyone logged into this Coder deployment
-  can open it. **NOTE**: the app acts with the OWNER's token and lists the OWNER's
-  workspaces, so colleagues who open it control the owner's workspaces and claude
-  sessions, not their own. Set `share=owner` to restrict it back to just the owner.
-  Either way, keep it in this template/subdomain form; don't expose it bare to the public internet.
+- **Auth**: `coder_app share=owner` —— only the logged-in owner can open it. The app acts
+  with the owner's token and lists the owner's workspaces, so it stays owner-only (sharing
+  it would let others drive the owner's workspaces). Keep it in this template/subdomain
+  form; don't expose it bare to the public internet.
 - **HTTPS**: the subdomain app has TLS built in -> PWA / Service Worker / Web Push /
   voice all work.
 - **token**: the hub needs a **user API token** (not an agent token) to list/control all
