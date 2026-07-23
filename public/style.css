@@ -61,6 +61,12 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); -web
 #list .group-hdr.open .chev { transform: rotate(90deg); }
 #list li.stopped .dot { opacity: .7; }
 
+/* workspace context menu (right-click / long-press) */
+.ctxmenu { position: fixed; z-index: 20; background: var(--card); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 4px; min-width: 190px; }
+.ctxmenu button { display: block; width: 100%; text-align: left; padding: 10px 12px; border: 0; background: none; color: var(--text); font-size: 13.5px; border-radius: 7px; cursor: pointer; }
+.ctxmenu button:hover, .ctxmenu button:active { background: var(--accent-weak); }
+.ctxmenu .ctx-del { color: #b4472e; }
+
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; background: var(--stopped); }
 .dot-on { background: var(--running); box-shadow: 0 0 0 3px #6a9a5b22; }
 .dot-off { background: var(--stopped); }

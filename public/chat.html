@@ -28,6 +28,8 @@ body { background:var(--bg); color:var(--text); font-family:var(--sans); -webkit
 .row { display:flex; }
 .row.user { justify-content:flex-end; }
 .bub { max-width:82%; padding:9px 13px; border-radius:16px; font-size:15px; line-height:1.5; white-space:normal; overflow-wrap:anywhere; }
+/* 让文字可长按选中/复制(iOS 默认可能禁用) */
+.bub, .bub *, .cmdout pre, .step .detail pre { -webkit-user-select:text; user-select:text; -webkit-touch-callout:default; }
 .user .bub { background:var(--accent); color:#fff; border-bottom-right-radius:5px; }
 .asst .bub { background:var(--card); border:1px solid var(--border); border-bottom-left-radius:5px; }
 .bub p { margin:.4em 0; } .bub p:first-child{margin-top:0;} .bub p:last-child{margin-bottom:0;}

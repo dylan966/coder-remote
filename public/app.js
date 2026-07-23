@@ -48,14 +48,46 @@ function makeSession(name) {
   const fit = new FitAddon(); term.loadAddon(fit); term.open(el);
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const sock = new WebSocket(`${proto}://${location.host}/api/pty?ws=${encodeURIComponent(name)}&width=80&height=24`);
-  sock.addEventListener('open', () => { fit.fit(); sock.send(JSON.stringify({ height: term.rows, width: term.cols })); updateHdr(name); });
+  const s = { el, term, sock, fit }; sessions.set(name, s);
+  // Copy/paste: claude runs the TUI in mouse mode, so drag-select needs Shift held.
+  // Then Cmd/Ctrl+C copies the selection (only when there is one, so Ctrl+C still
+  // interrupts otherwise); Cmd/Ctrl+V pastes the clipboard into the PTY.
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type !== 'keydown') return true;
+    const mod = e.metaKey || e.ctrlKey;
+    if (mod && (e.key === 'c' || e.key === 'C') && term.hasSelection()) {
+      navigator.clipboard.writeText(term.getSelection()).catch(() => {}); return false;
+    }
+    if (mod && (e.key === 'v' || e.key === 'V')) {
+      navigator.clipboard.readText().then((t) => { if (t && sock.readyState === 1) sock.send(JSON.stringify({ data: t })); }).catch(() => {}); return false;
+    }
+    return true;
+  });
+  sock.addEventListener('open', () => { fitSoon(s); updateHdr(name); });
   sock.addEventListener('close', () => updateHdr(name));
   sock.onmessage = (e) => term.write(e.data);
   term.onData((d) => sock.readyState === 1 && sock.send(JSON.stringify({ data: d })));
   term.onBell(() => notifyDone(name));
   el.addEventListener('click', () => s.term.focus());
-  const s = { el, term, sock, fit }; sessions.set(name, s); return s;
+  return s;
 }
+
+// Fit the terminal to its container. Deferred to the next frames so layout has settled
+// after display:none -> block (otherwise fit measures a stale/zero size → tiny 1/4 term).
+function fitSession(s) {
+  if (!s) return;
+  try { s.fit.fit(); if (s.sock.readyState === 1) s.sock.send(JSON.stringify({ height: s.term.rows, width: s.term.cols })); } catch (_) {}
+}
+function fitSoon(s) { requestAnimationFrame(() => requestAnimationFrame(() => fitSession(s))); }
+// Re-fit whenever the terminal area resizes (window, sidebar toggle, address-bar changes).
+try {
+  const ro = new ResizeObserver(() => {
+    if (isMobile()) return;
+    const s = active && sessions.get(active);
+    if (s && s.el.style.display !== 'none') fitSession(s);
+  });
+  ro.observe(document.getElementById('termwrap'));
+} catch (_) {}
 
 function isMobile() { return window.innerWidth <= 768; }
 
@@ -78,8 +110,8 @@ function activate(name) {
   sessions.forEach((s, n) => { if (n !== name) s.el.style.display = 'none'; });
   const s = sessions.get(name) || makeSession(name);
   s.el.style.display = 'block';
-  s.fit.fit(); s.term.focus();
-  if (s.sock.readyState === 1) s.sock.send(JSON.stringify({ height: s.term.rows, width: s.term.cols }));
+  s.term.focus();
+  fitSoon(s);   // defer: pane just switched from display:none, layout not settled yet
   renderList(); updateHdr();
 }
 
@@ -147,6 +179,49 @@ function sendToActive(data) {
 
 let workspaces = [];
 let stoppedOpen = false; // "Stopped" group collapsed by default
+
+// ---- workspace context menu: right-click (desktop) / long-press (mobile) → delete ----
+let ctxMenuEl = null;
+let justLongPressed = false;
+function hideCtxMenu() { if (ctxMenuEl) { ctxMenuEl.remove(); ctxMenuEl = null; } }
+document.addEventListener('click', hideCtxMenu);
+document.addEventListener('scroll', hideCtxMenu, true);
+function showWsMenu(x, y, w) {
+  hideCtxMenu();
+  const m = document.createElement('div'); m.className = 'ctxmenu';
+  const del = document.createElement('button');
+  del.className = 'ctx-del'; del.textContent = '🗑  Delete workspace';
+  del.addEventListener('click', (e) => { e.stopPropagation(); hideCtxMenu(); deleteWs(w.name); });
+  m.appendChild(del);
+  document.body.appendChild(m); ctxMenuEl = m;
+  m.style.left = Math.min(x, window.innerWidth - m.offsetWidth - 8) + 'px';
+  m.style.top = Math.min(y, window.innerHeight - m.offsetHeight - 8) + 'px';
+}
+async function deleteWs(name) {
+  if (!confirm(`Delete workspace "${name}"?\nThis destroys the workspace and its data.`)) return;
+  try {
+    const r = await fetch('/api/delete?ws=' + encodeURIComponent(name), { method: 'POST' });
+    if (!r.ok) { const b = await r.json().catch(() => ({})); alert('Delete failed: ' + (b.error || r.status)); return; }
+  } catch (e) { alert('Delete failed: ' + e.message); return; }
+  if (name === active) { // tearing down the currently-open one
+    const s = sessions.get(name); if (s) { try { s.sock.close(); } catch (_) {} s.el.remove(); sessions.delete(name); }
+    active = null;
+    const cf = document.getElementById('chatframe'); cf.removeAttribute('data-ws'); cf.src = 'about:blank';
+    app.classList.remove('showchat'); updateHdr();
+  }
+  refresh();
+}
+function attachWsMenu(li, w) {
+  li.addEventListener('contextmenu', (e) => { e.preventDefault(); showWsMenu(e.clientX, e.clientY, w); });
+  let t = null, sx = 0, sy = 0;
+  li.addEventListener('touchstart', (e) => {
+    const to = e.touches[0]; sx = to.clientX; sy = to.clientY;
+    t = setTimeout(() => { t = null; justLongPressed = true; showWsMenu(sx, sy, w); if (navigator.vibrate) navigator.vibrate(15); setTimeout(() => { justLongPressed = false; }, 500); }, 500);
+  }, { passive: true });
+  const cancel = () => { if (t) { clearTimeout(t); t = null; } };
+  li.addEventListener('touchend', cancel); li.addEventListener('touchmove', cancel); li.addEventListener('touchcancel', cancel);
+}
+
 function makeLi(w) {
   const li = document.createElement('li');
   const dot = document.createElement('span');
@@ -158,9 +233,11 @@ function makeLi(w) {
   if (w.name === active) cls.push('active');
   li.className = cls.join(' ');
   li.onclick = () => {
+    if (justLongPressed) { justLongPressed = false; return; } // long-press opened the menu; don't activate
     if (w.status === 'running') return activate(w.name);
     if (confirm(`Start workspace "${w.name}"?`)) startAndAttach(w.name);
   };
+  attachWsMenu(li, w);
   return li;
 }
 function renderList(filter = '') {

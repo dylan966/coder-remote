@@ -40,6 +40,16 @@ function makeClient(getAuth) {
     });
   }
 
+  /** Find a workspace by name and trigger a delete build (destroys the workspace). */
+  async function deleteWorkspace(name) {
+    const d = await api('/api/v2/workspaces?q=owner:me');
+    const w = (d.workspaces || []).find((x) => x.name === name);
+    if (!w) throw new Error(`no workspace ${name}`);
+    await api(`/api/v2/workspaces/${w.id}/builds`, {
+      method: 'POST', body: JSON.stringify({ transition: 'delete' }),
+    });
+  }
+
   /** Open a PTY WebSocket connection (with an auto reconnect id); returns a handle to send/listen/close. */
   function openPty({ agentId, width = 100, height = 30, command }) {
     const { coderHost, token } = getAuth();
@@ -65,6 +75,6 @@ function makeClient(getAuth) {
     };
   }
 
-  return { listWorkspaces, startWorkspace, openPty };
+  return { listWorkspaces, startWorkspace, deleteWorkspace, openPty };
 }
 module.exports = { makeClient };
