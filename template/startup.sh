@@ -4,15 +4,21 @@
 # (using the injected token) -> start the service via tmux.
 #
 # Env vars it depends on (injected by main.tf's agent env / coder secret):
-#   CODER_URL    the workspace's access_url (injected by main.tf)
-#   CODER_TOKEN  user API token -- one-time: coder secret create switcher-token --env CODER_TOKEN
-#   SWITCHER_REPO (optional) override the default git source (public repo, HTTPS clone needs no auth)
+#   CODER_URL      the workspace's access_url (injected by main.tf)
+#   SWITCHER_TOKEN user API token -- one-time: coder secret create switcher-token --env SWITCHER_TOKEN
+#                  (CODER_* env names are reserved by Coder, so the secret uses SWITCHER_TOKEN)
+#   SWITCHER_REPO  (optional) override the default git source (public repo, HTTPS clone needs no auth)
 set -uo pipefail
 log() { echo "[startup] $*"; }
 cd /home/coder
 
 REPO="${SWITCHER_REPO:-https://github.com/dylan966/coder-remote.git}"
 APP=/home/coder/coder-remote
+
+# The token secret is injected as SWITCHER_TOKEN (CODER_* names are reserved). Map it to
+# CODER_TOKEN so both `coder login` below and the switcher config (config.js) pick it up;
+# the tmux session started later inherits this exported CODER_TOKEN.
+export CODER_TOKEN="${CODER_TOKEN:-${SWITCHER_TOKEN:-}}"
 
 # ---- 1. Fetch the code (clone on first run, fast-forward pull after; skip if local changes) ----
 if [ -d "${APP}/.git" ]; then
@@ -38,9 +44,9 @@ log "npm deps ready (log: /tmp/switcher-npm.log)"
 if [ -n "${CODER_URL:-}" ] && [ -n "${CODER_TOKEN:-}" ]; then
     coder login "${CODER_URL}" --token "${CODER_TOKEN}" >/dev/null 2>&1 \
         && log "coder CLI logged in to ${CODER_URL}" \
-        || log "WARN: coder login failed (token not set? run coder secret create switcher-token --env CODER_TOKEN first)"
+        || log "WARN: coder login failed (token not set? run coder secret create switcher-token --env SWITCHER_TOKEN first)"
 else
-    log "WARN: missing CODER_URL / CODER_TOKEN -- switcher can't call Coder, set the switcher-token secret then restart"
+    log "WARN: missing CODER_URL / token -- switcher can't call Coder, set the switcher-token secret then restart"
 fi
 
 # ---- 4. Start the service (tmux, idempotent: skip if :8080 already in use) ----
@@ -61,8 +67,8 @@ cat <<'EOF'
   all workspaces and enter each one's claude session from mobile or desktop.
 
   One-time setup (run once in your local terminal, injected into all your workspaces):
-    coder tokens create --lifetime 8760h        # generate a long-lived user token, copy the output
-    printf %s '<paste token>' | coder secret create switcher-token --env CODER_TOKEN
+    coder tokens create --lifetime 168h         # 168h = server max; copy the output
+    printf %s '<paste token>' | coder secret create switcher-token --env SWITCHER_TOKEN
     coder restart coder-remote                   # make the hub log in again and start the service
 
   Always-on (disable auto-stop):

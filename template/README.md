@@ -20,7 +20,8 @@ no need to re-push the template**.
 - **HTTPS**: the subdomain app has TLS built in -> PWA / Service Worker / Web Push /
   voice all work.
 - **token**: the hub needs a **user API token** (not an agent token) to list/control all
-  your workspaces. Injected as `CODER_TOKEN` via `coder secret`, never checked into code/git.
+  your workspaces. Injected as `SWITCHER_TOKEN` via `coder secret` (CODER_* env names are
+  reserved, so startup.sh maps it to `CODER_TOKEN`), never checked into code/git.
 
 ## One-time setup (run on Mac, connected to coder.gmaster888.com)
 
@@ -31,9 +32,9 @@ coder templates push coder-remote -d template --yes
 # 2. Create the workspace
 coder create --template coder-remote coder-remote --yes
 
-# 3. Generate a long-lived user token and inject it as a secret (injected into all your workspaces' agent env)
-coder tokens create --lifetime 8760h
-printf %s '<paste the token from the previous step>' | coder secret create switcher-token --env CODER_TOKEN
+# 3. Generate a user token and inject it as a secret (injected into all your workspaces' agent env)
+coder tokens create --lifetime 168h        # 168h is the server's max token lifetime
+printf %s '<paste the token from the previous step>' | coder secret create switcher-token --env SWITCHER_TOKEN
 
 # 4. Always-on: disable auto-stop
 coder schedule stop coder-remote manual
@@ -61,7 +62,7 @@ coder ssh coder-remote
 tmux ls; tmux attach -t switcher     # service process
 tail -f /tmp/switcher.log            # runtime log
 tail -f /tmp/switcher-npm.log        # dependency install log
-echo "$CODER_URL / ${CODER_TOKEN:+token set}"   # whether env injection took effect
+echo "$CODER_URL / ${SWITCHER_TOKEN:+token set}"   # whether env injection took effect
 ```
 
 - App shows `not_logged_in` on open -> the `switcher-token` secret isn't set or hasn't

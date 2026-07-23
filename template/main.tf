@@ -10,8 +10,8 @@
 # One-time setup (run on Mac, connected to coder.gmaster888.com):
 #   coder templates push coder-remote -d template --yes    # run from repo root, -d points here
 #   coder create --template coder-remote coder-remote --yes
-#   coder tokens create --lifetime 8760h                    # generate long-lived user token
-#   printf %s '<token>' | coder secret create switcher-token --env CODER_TOKEN
+#   coder tokens create --lifetime 168h                     # 168h = server max lifetime
+#   printf %s '<token>' | coder secret create switcher-token --env SWITCHER_TOKEN
 #   coder schedule stop coder-remote manual                 # always-on: disable auto-stop
 #   coder restart coder-remote
 
@@ -34,9 +34,10 @@ locals {
 
 # ------------------------------------------------------------------------------
 # Coder agent —— injects CODER_URL (used by the switcher backend + coder CLI).
-# CODER_TOKEN is not set here: it's injected via
-# `coder secret create switcher-token --env CODER_TOKEN`
-# (a user-level secret, automatically added to this workspace agent's env).
+# The user token is not set here: it's injected via
+# `coder secret create switcher-token --env SWITCHER_TOKEN`
+# (a user-level secret; CODER_* env names are reserved, so startup.sh maps
+# SWITCHER_TOKEN -> CODER_TOKEN for the switcher backend).
 # ------------------------------------------------------------------------------
 resource "coder_agent" "main" {
   arch = data.coder_provisioner.me.arch
