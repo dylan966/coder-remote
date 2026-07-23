@@ -61,9 +61,11 @@ cd /home/coder/projects/init
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 # Pre-trust the folder + skip the dangerous-mode prompt so unattended launch doesn't hang.
 CJ="$HOME/.claude.json"; [ -f "$CJ" ] || echo '{}' >"$CJ"
-jq '.projects["/home/coder/projects/init"] = ((.projects["/home/coder/projects/init"] // {}) + {hasTrustDialogAccepted:true, hasCompletedProjectOnboarding:true})' "$CJ" >"$CJ.tmp" 2>/dev/null && mv "$CJ.tmp" "$CJ"
+# hasCompletedOnboarding skips the global first-run wizard (theme picker etc.);
+# the project block pre-trusts the folder. Both are needed for an unattended launch.
+jq '.hasCompletedOnboarding = true | .projects["/home/coder/projects/init"] = ((.projects["/home/coder/projects/init"] // {}) + {hasTrustDialogAccepted:true, hasCompletedProjectOnboarding:true})' "$CJ" >"$CJ.tmp" 2>/dev/null && mv "$CJ.tmp" "$CJ"
 mkdir -p "$HOME/.claude"; SJ="$HOME/.claude/settings.json"; [ -f "$SJ" ] || echo '{}' >"$SJ"
-jq '. + {skipDangerousModePermissionPrompt:true}' "$SJ" >"$SJ.tmp" 2>/dev/null && mv "$SJ.tmp" "$SJ"
+jq '. + {skipDangerousModePermissionPrompt:true, theme:"dark"}' "$SJ" >"$SJ.tmp" 2>/dev/null && mv "$SJ.tmp" "$SJ"
 for _i in $(seq 1 30); do command -v claude >/dev/null 2>&1 && break; sleep 1; done
 # Resume the latest conversation if any, else start fresh. Always bypass permissions.
 if compgen -G "$HOME/.claude/projects/-home-coder-projects-init/*.jsonl" >/dev/null 2>&1; then
