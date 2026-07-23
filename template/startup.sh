@@ -15,11 +15,6 @@ cd /home/coder
 REPO="${SWITCHER_REPO:-https://github.com/dylan966/coder-remote.git}"
 APP=/home/coder/coder-remote
 
-# The token secret is injected as SWITCHER_TOKEN (CODER_* names are reserved). Map it to
-# CODER_TOKEN so both `coder login` below and the switcher config (config.js) pick it up;
-# the tmux session started later inherits this exported CODER_TOKEN.
-export CODER_TOKEN="${CODER_TOKEN:-${SWITCHER_TOKEN:-}}"
-
 # ---- 1. Fetch the code (clone on first run, fast-forward pull after; skip if local changes) ----
 if [ -d "${APP}/.git" ]; then
     log "pull ${APP}"
@@ -38,16 +33,21 @@ else
 fi
 log "npm deps ready (log: /tmp/switcher-npm.log)"
 
-# ---- 3. coder CLI login (switcher's upload/attachment/files go through `coder ssh`) ----
-# The switcher backend talks to Coder REST/PTY directly via the CODER_TOKEN env var;
-# but the `coder ssh` it shells out to needs the CLI to already be logged in.
-if [ -n "${CODER_URL:-}" ] && [ -n "${CODER_TOKEN:-}" ]; then
-    coder login "${CODER_URL}" --token "${CODER_TOKEN}" >/dev/null 2>&1 \
+# ---- 3. coder CLI login ----
+# Log in with the injected SWITCHER_TOKEN, writing the coder session file. We deliberately
+# do NOT export CODER_TOKEN: the switcher config (config.js) reads the session file, so the
+# daily token-refresh's `coder login` keeps the running server on a fresh token with no
+# restart. (config.js prefers env.CODER_TOKEN if set — leaving it unset is what enables this.)
+# The `coder ssh` the switcher shells out to also uses this same login session.
+TOKEN="${SWITCHER_TOKEN:-${CODER_TOKEN:-}}"
+if [ -n "${CODER_URL:-}" ] && [ -n "${TOKEN}" ]; then
+    coder login "${CODER_URL}" --token "${TOKEN}" >/dev/null 2>&1 \
         && log "coder CLI logged in to ${CODER_URL}" \
-        || log "WARN: coder login failed (token not set? run coder secret create switcher-token --env SWITCHER_TOKEN first)"
+        || log "WARN: coder login failed (token unset/expired? run coder secret create switcher-token --env SWITCHER_TOKEN)"
 else
     log "WARN: missing CODER_URL / token -- switcher can't call Coder, set the switcher-token secret then restart"
 fi
+unset TOKEN
 
 # ---- 4. Start the service (tmux, idempotent: skip if :8080 already in use) ----
 if ss -tln 2>/dev/null | grep -q ':8080'; then
