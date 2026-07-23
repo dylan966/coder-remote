@@ -149,7 +149,7 @@ function render(ev) {
   switch (ev.kind) {
     case 'title': {
       document.title = 'Chat · ' + ev.title;
-      if (ev.title && !freshMode) sessbtn.textContent = ev.title + ' ▾';   // live title of the current session
+      if (ev.title && !freshMode && !currentIsMain) sessbtn.textContent = ev.title + ' ▾';   // live title (only when the switcher is shown, i.e. non-main)
       break;
     }
     case 'user':
@@ -209,11 +209,17 @@ function curLabel() {
   const c = sessions.find((s) => s.id === currentSession);
   return c ? c.title : (currentIsMain ? 'main' : (currentSession || 'session'));
 }
+// The top switcher shows only on a NON-main session — main is the default (opened from the sidebar),
+// so switching away from it belongs in the sidebar tree, not a top-bar dropdown.
+function updateSessBtn() {
+  sessbtn.hidden = currentIsMain && !freshMode;
+  if (!sessbtn.hidden) sessbtn.textContent = curLabel() + ' ▾';
+}
 function renderSessions(list) {
   sessions = list || [];
   if (!sessions.length) {
-    sessbtn.textContent = '(no sessions) ▾';
-    if (!log.querySelector('.empty')) { const h = document.createElement('div'); h.className = 'cmdout empty'; h.innerHTML = '<pre>This workspace has no conversations yet.\nTap 会话 ▾ → ＋ to start one, or just send a message.</pre>'; add(h); }
+    if (!log.querySelector('.empty')) { const h = document.createElement('div'); h.className = 'cmdout empty'; h.innerHTML = '<pre>This workspace has no conversations yet.\nJust send a message to start one.</pre>'; add(h); }
+    updateSessBtn();
     if (sesspanel.classList.contains('show')) buildPanel();
     return;
   }
@@ -222,14 +228,14 @@ function renderSessions(list) {
   // messages yet isn't enumerated). Until then stay in freshMode (chat follows the newest file).
   if (freshMode) { const nw = sessions.find((s) => s.cwd === currentCwd); if (nw) { currentSession = nw.id; currentIsMain = !!nw.main; freshMode = false; ptyExtra = {}; } }
   if (!currentSession) { const m = sessions.find((s) => s.main) || sessions[0]; currentSession = m.id; currentCwd = m.cwd; currentIsMain = !!m.main; }
-  sessbtn.textContent = curLabel() + ' ▾';
+  updateSessBtn();
   if (sesspanel.classList.contains('show')) buildPanel();
 }
 function buildPanel() {
   sesspanel.innerHTML = '';
-  const nw = document.createElement('div'); nw.className = 'sp-new'; nw.textContent = '＋ 新建会话'; nw.addEventListener('click', onNew); sesspanel.appendChild(nw);
+  const nw = document.createElement('div'); nw.className = 'sp-new'; nw.textContent = '＋ New session'; nw.addEventListener('click', onNew); sesspanel.appendChild(nw);
   const groups = {};
-  sessions.forEach((s) => { const p = s.project || '~'; (groups[p] = groups[p] || []).push(s); });
+  sessions.filter((s) => !s.main).forEach((s) => { const p = s.project || '~'; (groups[p] = groups[p] || []).push(s); }); // main lives in the sidebar
   Object.keys(groups).forEach((proj) => {
     const h = document.createElement('div'); h.className = 'sp-proj'; h.textContent = proj; sesspanel.appendChild(h);
     groups[proj].forEach((s) => sesspanel.appendChild(sessRow(s)));
@@ -238,7 +244,7 @@ function buildPanel() {
 function iconBtn(label, title, fn) { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.title = title; b.addEventListener('click', (e) => { e.stopPropagation(); fn(); }); return b; }
 function sessRow(s) {
   const row = document.createElement('div'); row.className = 'sp-sess' + (s.id === currentSession ? ' cur' : '');
-  const nm = document.createElement('span'); nm.className = 'sp-name'; nm.textContent = s.title + (s.main ? ' ·主' : '');
+  const nm = document.createElement('span'); nm.className = 'sp-name'; nm.textContent = s.title + (s.main ? ' ·main' : '');
   nm.addEventListener('click', () => { switchSession(s); closePanel(); });
   row.appendChild(nm);
   const acts = document.createElement('span'); acts.className = 'sp-acts';
@@ -253,10 +259,12 @@ function switchSession(s) {
   currentSession = s.id; currentCwd = s.cwd || ''; currentIsMain = !!s.main; freshMode = false; ptyExtra = {};
   reconnectAll();
 }
-function onNew() {
-  const proj = (prompt('项目名(在 ~ 下建同名目录并开新会话):', '') || '').trim();
+async function onNew() {
+  const proj = await uiPrompt({
+    title: 'New session', message: 'Creates ~/<name> and starts a new session.', placeholder: 'project name', ok: 'Create',
+    validate: (v) => (!v ? 'Enter a project name' : (!/^[A-Za-z0-9._-]+$/.test(v) ? 'Letters / digits / . _ - only' : '')),
+  });
   if (!proj) return;
-  if (!/^[A-Za-z0-9._-]+$/.test(proj)) { alert('项目名只能用 字母 / 数字 / . _ -'); return; }
   closePanel();
   currentSession = null; currentIsMain = false; freshMode = true; currentCwd = '/home/coder/' + proj; ptyExtra = { cwd: currentCwd };
   reconnectAll();
@@ -269,22 +277,22 @@ function forkSession(s) {
   setTimeout(() => { closeChat(); openChat(); }, 2500);
 }
 async function renameSession(s) {
-  const nm = (prompt('显示名:', s.title) || '').trim(); if (!nm) return;
+  const nm = await uiPrompt({ title: 'Rename session', value: s.title, ok: 'Save', validate: (v) => (v ? '' : 'Enter a name') });
+  if (!nm) return;
   try { await fetch('/api/session/rename?ws=' + encodeURIComponent(wsName), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: s.id, name: nm }) }); } catch (_) {}
   closeChat(); openChat(); // re-enumerate to pick up the new name
 }
 async function deleteSession(s) {
   if (s.main) return;
-  if (!confirm('删除会话「' + s.title + '」?')) return;
+  if (!await uiConfirm({ title: 'Delete session', message: 'Delete "' + s.title + '"? This removes its transcript.', ok: 'Delete', danger: true })) return;
   try { await fetch('/api/session/delete?ws=' + encodeURIComponent(wsName), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: s.id }) }); } catch (_) {}
   closePanel();
   if (s.id === currentSession) { const m = sessions.find((x) => x.main); currentSession = m ? m.id : null; currentCwd = m ? m.cwd : ''; currentIsMain = !!(m && m.main); freshMode = false; ptyExtra = {}; reconnectAll(); }
   else { closeChat(); openChat(); }
 }
 
-// ---------- 快捷链接(该 workspace 的前端/后端/服务入口)----------
-const linksBtn = document.getElementById('links');
-const linksMenu = document.getElementById('linksmenu');
+// ---------- Quick links (this workspace's frontend/backend/service entrypoints) ----------
+// Rendered as text pills at the bottom (above the input) — no top-bar icon.
 let appsCache = null;
 async function loadApps() {
   if (appsCache) return appsCache;
@@ -295,17 +303,12 @@ async function loadApps() {
   } catch (_) { appsCache = []; }
   return appsCache;
 }
-(async () => { const apps = await loadApps(); if (apps.length) linksBtn.hidden = false; })(); // 有链接才显示 🔗
-linksBtn.addEventListener('click', async (e) => {
-  e.stopPropagation();
-  if (linksMenu.classList.contains('show')) { linksMenu.classList.remove('show'); return; }
+(async () => {
   const apps = await loadApps();
-  linksMenu.innerHTML = apps.length
-    ? apps.map((a) => '<a href="' + a.url + '" target="_blank" rel="noopener">' + esc(a.name) + '</a>').join('')
-    : '<span class=empty>无快捷链接</span>';
-  linksMenu.classList.add('show');
-});
-document.addEventListener('click', () => linksMenu.classList.remove('show'));
+  const row = document.getElementById('linksrow');
+  if (!row || !apps.length) return;
+  row.innerHTML = apps.map((a) => '<a href="' + a.url + '" target="_blank" rel="noopener">' + esc(a.name) + '</a>').join('');
+})();
 
 // ---------- Notifications (only fire when the page is hidden, debounced; most useful when installed as a PWA in the background) ----------
 function ensureNotifyPerm() {
@@ -333,8 +336,17 @@ async function ensurePush() {
     const meta = await fetch('/api/push/key').then((r) => r.json());
     if (!meta.enabled || !meta.key) return;
     const reg = await navigator.serviceWorker.ready;
+    const want = urlB64ToUint8(meta.key);
     let sub = await reg.pushManager.getSubscription();
-    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8(meta.key) });
+    if (sub) {
+      // The hub may have been recreated with a fresh VAPID key. A subscription is bound to the key
+      // it was made with, so a stale one silently fails (VAPID mismatch). If the key changed, drop
+      // it and re-subscribe with the current key — silent, no permission prompt (already granted).
+      const cur = new Uint8Array(sub.options.applicationServerKey || []);
+      const same = cur.length === want.length && cur.every((b, i) => b === want[i]);
+      if (!same) { try { await sub.unsubscribe(); } catch (_) {} sub = null; }
+    }
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: want });
     await fetch('/api/push/subscribe', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ws: wsName, sub }) });
     pushDone = true;
   } catch (_) { /* user denied / unsupported, stay silent */ }

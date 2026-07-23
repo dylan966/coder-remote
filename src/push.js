@@ -21,15 +21,13 @@ function writeJson(file, val) {
 let vapid = null;
 let enabled = false;
 if (webpush) {
-  // Prefer keys from env (coder secret) so the hub is stateless — recreating it keeps the same
-  // VAPID keys, so existing push subscriptions stay valid. Fall back to a local file / generate.
-  if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
-    vapid = { publicKey: process.env.VAPID_PUBLIC_KEY, privateKey: process.env.VAPID_PRIVATE_KEY };
-  } else {
-    vapid = readJson(VAPID_FILE, null);
-    if (!vapid || !vapid.publicKey || !vapid.privateKey) {
-      try { vapid = webpush.generateVAPIDKeys(); writeJson(VAPID_FILE, vapid); } catch (e) { console.error('[push] vapid gen', e.message); vapid = null; }
-    }
+  // Generate a VAPID keypair on first boot and persist it locally (~/.switcher/vapid.json).
+  // The hub is otherwise stateless; if this file is lost (workspace recreated), a new keypair is
+  // generated and the frontend silently re-subscribes to the new key on its next load (key-aware
+  // resubscribe in chat.js), so no coder secret is needed and no permission re-prompt occurs.
+  vapid = readJson(VAPID_FILE, null);
+  if (!vapid || !vapid.publicKey || !vapid.privateKey) {
+    try { vapid = webpush.generateVAPIDKeys(); writeJson(VAPID_FILE, vapid); } catch (e) { console.error('[push] vapid gen', e.message); vapid = null; }
   }
   if (vapid) {
     // a mailto placeholder is fine for the subject; browser push services only require it to be present.

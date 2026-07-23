@@ -143,4 +143,8 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); -web
     box-shadow: 0 2px 6px #d9775740;
   }
   #msend:active { transform: scale(.94); }
+
+  /* Touch has no hover, so the session-row actions (fork/rename/delete) are always shown in the drawer. */
+  #list li.sub .sub-acts { display: flex; }
+  #list li.sub .subact { font-size: 15px; padding: 4px 7px; }
 }

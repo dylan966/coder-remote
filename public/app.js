@@ -70,7 +70,12 @@ function currentProjectSessions() {
 function renderHdrSess() {
   const btn = document.getElementById('hdr-sess'); const menu = document.getElementById('hdr-sessmenu');
   if (!btn || !menu) return;
-  if (!activeWs || isMobile()) { btn.style.display = 'none'; menu.classList.remove('show'); return; }
+  // Only shown when the active session is NON-main: main is the default (click the workspace), so
+  // switching away from it belongs in the sidebar. On a non-main session this quick-switches among
+  // the project's other non-main sessions.
+  const onMain = !activeSess || !!activeSess.main;
+  const others = currentProjectSessions().filter((s) => !s.main);
+  if (!activeWs || isMobile() || onMain || !others.length) { btn.style.display = 'none'; menu.classList.remove('show'); return; }
   btn.style.display = '';
   btn.textContent = curSessLabel() + ' ▾';
 }
@@ -176,12 +181,12 @@ function activate(ws, sess) {
   activeWs = ws; activeSess = sess || null;
   if (isMobile()) {
     // Mobile: embedded chat-bubble view (chat.html) owns the session tree; the sidebar just picks a ws.
-    active = sessKey(ws, ''); // keep `active` a real key for header/notify parity
+    active = sessKey(ws, (sess && !sess.main && sess.id) ? sess.id : ''); // real key → correct tree highlight
     const cf = document.getElementById('chatframe');
     const src = '/chat.html?ws=' + encodeURIComponent(ws) + (sess && !sess.main && sess.id ? '&session=' + encodeURIComponent(sess.id) : '');
     if (cf.getAttribute('data-src') !== src) { cf.setAttribute('data-src', src); cf.setAttribute('data-ws', ws); cf.src = src; }
     app.classList.add('showchat');
-    app.classList.remove('open');
+    app.classList.remove('open'); // close the drawer to reveal the chat
     renderList(searchVal()); updateHdr();
     return;
   }
@@ -286,10 +291,10 @@ function sendToActive(data) {
     e.stopPropagation();
     if (menu.classList.contains('show')) { menu.classList.remove('show'); return; }
     menu.innerHTML = '';
-    const inProj = currentProjectSessions();
+    const inProj = currentProjectSessions().filter((s) => !s.main); // main lives in the sidebar, not here
     if (!inProj.length) { const it = document.createElement('div'); it.className = 'hs-item'; it.textContent = '(no other sessions)'; menu.appendChild(it); }
     inProj.forEach((s) => {
-      const cur = (activeSess && activeSess.id === s.id) || (!activeSess && s.main);
+      const cur = activeSess && activeSess.id === s.id;
       const it = document.createElement('div'); it.className = 'hs-item' + (cur ? ' cur' : '');
       it.textContent = s.title + (s.main ? ' ·main' : '');
       it.onclick = () => { menu.classList.remove('show'); activate(activeWs, s); };
@@ -313,23 +318,26 @@ function makeLi(w) {
   if (w.status !== 'running') cls.push('stopped');
   if (w.name === activeWs) cls.push('active');
   li.className = cls.join(' ');
-  // Desktop: running workspaces get a caret that expands into their project → session tree.
-  if (w.status === 'running' && !isMobile()) {
+  // Running workspaces get a caret that expands into their project → session tree (both PC + mobile).
+  if (w.status === 'running') {
     const cv = document.createElement('span'); cv.className = 'ws-chev' + (expanded.has(w.name) ? ' open' : ''); cv.textContent = '▸';
     cv.onclick = (e) => { e.stopPropagation(); toggleExpand(w.name); };
     li.appendChild(cv);
   }
-  li.onclick = () => {
-    if (w.status !== 'running') { if (confirm(`Start workspace "${w.name}"?`)) startAndAttach(w.name); return; }
-    if (isMobile()) return activate(w.name);
-    if (!expanded.has(w.name)) toggleExpand(w.name); // reveal its sessions...
-    activate(w.name);                                // ...and open the main session
+  li.onclick = async () => {
+    if (w.status !== 'running') { if (await uiConfirm({ title: 'Start workspace', message: `Start "${w.name}"?`, ok: 'Start' })) startAndAttach(w.name); return; }
+    // Mobile: the sidebar is a drawer, so the row just toggles the tree (stays open); tapping a
+    // session opens it + closes the drawer. Desktop: the terminal is always beside the sidebar, so
+    // the row expands the tree AND opens the main session in one click.
+    if (isMobile()) { toggleExpand(w.name); return; }
+    if (!expanded.has(w.name)) toggleExpand(w.name);
+    activate(w.name);
   };
   return li;
 }
 function appendWs(ul, w) {
   ul.appendChild(makeLi(w));
-  if (w.status === 'running' && !isMobile() && expanded.has(w.name)) sessSubRows(w.name).forEach((r) => ul.appendChild(r));
+  if (w.status === 'running' && expanded.has(w.name)) sessSubRows(w.name).forEach((r) => ul.appendChild(r));
 }
 function renderList(filter = '') {
   const ul = document.getElementById('list'); ul.innerHTML = '';
@@ -401,10 +409,12 @@ function sessSubRow(ws, s) {
   li.onclick = (e) => { e.stopPropagation(); activate(ws, s); };
   return li;
 }
-function newSession(ws) {
-  const proj = (prompt('Project name (creates ~/<name> and starts a new session):', '') || '').trim();
+async function newSession(ws) {
+  const proj = await uiPrompt({
+    title: 'New session', message: 'Creates ~/<name> and starts a new session.', placeholder: 'project name', ok: 'Create',
+    validate: (v) => (!v ? 'Enter a project name' : (!/^[A-Za-z0-9._-]+$/.test(v) ? 'Letters / digits / . _ - only' : '')),
+  });
   if (!proj) return;
-  if (!/^[A-Za-z0-9._-]+$/.test(proj)) { alert('Project name: letters / digits / . _ - only'); return; }
   activate(ws, { fresh: true, cwd: '/home/coder/' + proj, title: 'new…' });
   setTimeout(() => refreshSessions(ws), 2600); // re-enumerate so the created session appears in the tree
 }
@@ -413,13 +423,14 @@ function forkSession(ws, s) {
   setTimeout(() => refreshSessions(ws), 2600);
 }
 async function renameSession(ws, s) {
-  const nm = (prompt('Display name:', s.title) || '').trim(); if (!nm) return;
+  const nm = await uiPrompt({ title: 'Rename session', value: s.title, ok: 'Save', validate: (v) => (v ? '' : 'Enter a name') });
+  if (!nm) return;
   try { await fetch('/api/session/rename?ws=' + encodeURIComponent(ws), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: s.id, name: nm }) }); } catch (_) {}
   refreshSessions(ws);
 }
 async function deleteSession(ws, s) {
   if (s.main) return;
-  if (!confirm('Delete session "' + s.title + '"?')) return;
+  if (!await uiConfirm({ title: 'Delete session', message: 'Delete "' + s.title + '"? This removes its transcript.', ok: 'Delete', danger: true })) return;
   try { await fetch('/api/session/delete?ws=' + encodeURIComponent(ws), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: s.id }) }); } catch (_) {}
   const key = sessKey(ws, s.id); const ps = sessions.get(key);
   if (ps) { try { ps.sock.close(); } catch (_) {} try { ps.term.dispose(); } catch (_) {} ps.el.remove(); sessions.delete(key); }

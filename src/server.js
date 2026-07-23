@@ -284,7 +284,7 @@ for f in glob.glob(base + '/*/*.jsonl'):
                 elif t == 'last-prompt': lp = o.get('lastPrompt') or lp
                 elif t == 'user' or t == 'assistant':
                     n += 1
-                    if o.get('cwd'): cwd = o.get('cwd')   # claude records the cwd on each turn → project
+                    if o.get('cwd') and cwd is None: cwd = o.get('cwd')   # first turn's cwd = where the session was launched → project (not where claude wandered to later)
                     if t == 'assistant':
                         mid = (o.get('message') or {}).get('id')
                         if mid: ids.add(mid)
