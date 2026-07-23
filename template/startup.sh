@@ -68,6 +68,9 @@ jq '. + {skipDangerousModePermissionPrompt:true, theme:"dark", model:"opus[1m]"}
 for _i in $(seq 1 30); do command -v claude >/dev/null 2>&1 && break; sleep 1; done
 # Resume the latest conversation if any, else start fresh. Always bypass permissions.
 if compgen -G "$HOME/.claude/projects/-home-coder/*.jsonl" >/dev/null 2>&1; then
+  # Drop a possibly-stale lastSessionId (set on abnormal exit / non-resumable one-shots)
+  # so --continue picks the newest resumable session by history instead of a dead pointer.
+  jq 'del(.projects["/home/coder"].lastSessionId)' "$CJ" >"$CJ.tmp" 2>/dev/null && mv "$CJ.tmp" "$CJ"
   exec claude --dangerously-skip-permissions --continue
 else
   exec claude --dangerously-skip-permissions
