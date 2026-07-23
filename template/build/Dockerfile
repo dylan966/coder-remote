@@ -14,7 +14,7 @@ ARG TARGETARCH
 
 # ---- OS base tools (base64/tar/ss etc. come with coreutils/procps/iproute2) ----
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl wget gnupg \
+        ca-certificates curl wget gnupg sudo \
         git jq tmux less procps iproute2 openssh-client \
         locales tzdata \
     && sed -i 's/^# *\(en_US.UTF-8\)/\1/' /etc/locale.gen \
