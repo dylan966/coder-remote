@@ -80,6 +80,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); -web
 #list li.sub.sub-new { color: var(--accent); font-weight: 500; }
 #list li.sub.sub-sess { padding-left: 34px; }
 #list li.sub.sub-sess.active { background: var(--accent-weak); font-weight: 600; }
+#list li.sub.sub-sess.pending .sub-name { color: var(--muted); font-style: italic; }
 #list li.sub .sub-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #list li.sub .sub-acts { display: none; gap: 2px; flex: 0 0 auto; }
 #list li.sub.sub-sess:hover .sub-acts { display: flex; }

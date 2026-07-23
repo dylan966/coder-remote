@@ -186,11 +186,18 @@ function render(ev) {
 const sessbtn = document.getElementById('sessbtn');
 const sesspanel = document.getElementById('sesspanel');
 let sessions = [];
-let currentSession = new URLSearchParams(location.search).get('session') || null;
+const _q = new URLSearchParams(location.search);
+let currentSession = _q.get('session') || null;
 let currentCwd = '';
 let currentIsMain = !currentSession;   // default click = main session (shares the "claude" tmux with the desktop terminal)
 let freshMode = false;                 // create/fork: follow the newest session file until it's adopted
 let ptyExtra = {};                     // {cwd, fork} for the create/fork PTY launch
+// The sidebar's "New session" / provisional row deep-links here with a fresh cwd (and fork id):
+// enter freshMode so this chat launches/follows that session rather than the workspace's main.
+if (_q.get('freshcwd')) {
+  currentSession = null; currentIsMain = false; freshMode = true; currentCwd = _q.get('freshcwd');
+  ptyExtra = _q.get('forkid') ? { cwd: currentCwd, fork: _q.get('forkid') } : { cwd: currentCwd };
+}
 
 function closePanel() { sesspanel.classList.remove('show'); }
 sessbtn.addEventListener('click', (e) => { e.stopPropagation(); if (sesspanel.classList.contains('show')) closePanel(); else { buildPanel(); sesspanel.classList.add('show'); } });

@@ -18,9 +18,14 @@ let activeWs = null;             // workspace name of the active session
 let activeSess = null;           // active session descriptor from the tree (null = plain "main")
 const sessCache = new Map();     // ws -> [ {id,title,project,cwd,main,...} ] (enumerated on demand)
 const expanded = new Set();      // ws names currently expanded in the sidebar tree (desktop)
+// A freshly created/forked session has no transcript until its first turn, so the backend can't
+// enumerate it yet. We keep a provisional entry here (per ws) so it stays visible in the tree, and
+// adopt it (swap in the real id, reusing its live pane) once it shows up in the enumeration.
+const pending = new Map();        // ws -> { key, cwd, project, title, desc, fork?, seen? }
 let pendingWs = new URLSearchParams(location.search).get('ws'); // on refresh, auto-open per URL
 function sessKey(ws, sid) { return ws + '\n' + (sid || ''); }
 function searchVal() { const s = document.getElementById('search'); return s ? s.value : ''; }
+function projName(cwd) { if (!cwd) return '(unknown)'; if (cwd === '/home/coder') return '~'; return cwd.replace(/\/+$/, '').split('/').pop() || cwd; }
 
 function notifyDone(s) {
   if (!(window.Notification && Notification.permission === 'granted')) return;
@@ -181,9 +186,13 @@ function activate(ws, sess) {
   activeWs = ws; activeSess = sess || null;
   if (isMobile()) {
     // Mobile: embedded chat-bubble view (chat.html) owns the session tree; the sidebar just picks a ws.
-    active = sessKey(ws, (sess && !sess.main && sess.id) ? sess.id : ''); // real key → correct tree highlight
+    // key: fresh → its client key; existing non-main → its id; main → '' (so the tree highlights right)
+    active = sess && sess.fresh ? sessKey(ws, sess.fork ? 'fork:' + sess.fork : 'new:' + sess.cwd)
+      : sessKey(ws, (sess && !sess.main && sess.id) ? sess.id : '');
     const cf = document.getElementById('chatframe');
-    const src = '/chat.html?ws=' + encodeURIComponent(ws) + (sess && !sess.main && sess.id ? '&session=' + encodeURIComponent(sess.id) : '');
+    let src = '/chat.html?ws=' + encodeURIComponent(ws);
+    if (sess && sess.fresh) { src += '&freshcwd=' + encodeURIComponent(sess.cwd); if (sess.fork) src += '&forkid=' + encodeURIComponent(sess.fork); }
+    else if (sess && !sess.main && sess.id) src += '&session=' + encodeURIComponent(sess.id);
     if (cf.getAttribute('data-src') !== src) { cf.setAttribute('data-src', src); cf.setAttribute('data-ws', ws); cf.src = src; }
     app.classList.add('showchat');
     app.classList.remove('open'); // close the drawer to reveal the chat
@@ -326,11 +335,9 @@ function makeLi(w) {
   }
   li.onclick = async () => {
     if (w.status !== 'running') { if (await uiConfirm({ title: 'Start workspace', message: `Start "${w.name}"?`, ok: 'Start' })) startAndAttach(w.name); return; }
-    // Mobile: the sidebar is a drawer, so the row just toggles the tree (stays open); tapping a
-    // session opens it + closes the drawer. Desktop: the terminal is always beside the sidebar, so
-    // the row expands the tree AND opens the main session in one click.
-    if (isMobile()) { toggleExpand(w.name); return; }
-    if (!expanded.has(w.name)) toggleExpand(w.name);
+    // The row opens the workspace's main (default) session. Use the ▸ caret to expand the tree and
+    // reach other sessions. (On mobile, opening main also closes the drawer.)
+    if (!isMobile() && !expanded.has(w.name)) toggleExpand(w.name);
     activate(w.name);
   };
   return li;
@@ -387,9 +394,15 @@ function sessSubRows(ws) {
   const nw = document.createElement('li'); nw.className = 'sub sub-new'; nw.textContent = '＋ New session';
   nw.onclick = (e) => { e.stopPropagation(); newSession(ws); }; rows.push(nw);
   if (!list) { const li = document.createElement('li'); li.className = 'sub loading'; li.textContent = 'loading…'; rows.push(li); return rows; }
-  if (!list.length) { const li = document.createElement('li'); li.className = 'sub empty'; li.textContent = '(no conversations yet)'; rows.push(li); return rows; }
+  // main is NOT listed — clicking the workspace already opens it; only OTHER sessions appear here.
   const groups = {};
-  list.forEach((s) => { const p = s.project || '~'; (groups[p] = groups[p] || []).push(s); });
+  list.filter((s) => !s.main).forEach((s) => { const p = s.project || '~'; (groups[p] = groups[p] || []).push(s); });
+  // a just-created/forked session with no transcript yet → show it provisionally so it doesn't vanish.
+  const p = pending.get(ws);
+  if (p) {
+    const already = p.fork ? list.some((s) => s.cwd === p.cwd && !p.seen.has(s.id)) : list.some((s) => s.cwd === p.cwd && !s.main);
+    if (!already) { (groups[p.project] = groups[p.project] || []).push({ _pending: true, title: 'starting…', project: p.project, cwd: p.cwd }); }
+  }
   Object.keys(groups).forEach((proj) => {
     const h = document.createElement('li'); h.className = 'sub sub-proj'; h.textContent = proj; rows.push(h);
     groups[proj].forEach((s) => rows.push(sessSubRow(ws, s)));
@@ -397,16 +410,18 @@ function sessSubRows(ws) {
   return rows;
 }
 function sessSubRow(ws, s) {
-  const key = sessKey(ws, s.main ? '' : s.id);
-  const li = document.createElement('li'); li.className = 'sub sub-sess' + (key === active ? ' active' : '');
-  const nm = document.createElement('span'); nm.className = 'sub-name'; nm.textContent = s.title + (s.main ? ' ·main' : '');
+  const key = s._pending ? pending.get(ws).key : sessKey(ws, s.id);
+  const li = document.createElement('li'); li.className = 'sub sub-sess' + (key === active ? ' active' : '') + (s._pending ? ' pending' : '');
+  const nm = document.createElement('span'); nm.className = 'sub-name'; nm.textContent = s.title;
   li.appendChild(nm);
-  const acts = document.createElement('span'); acts.className = 'sub-acts';
-  acts.appendChild(subBtn('⑂', 'fork', () => forkSession(ws, s)));
-  acts.appendChild(subBtn('✎', 'rename', () => renameSession(ws, s)));
-  if (!s.main) acts.appendChild(subBtn('🗑', 'delete', () => deleteSession(ws, s)));
-  li.appendChild(acts);
-  li.onclick = (e) => { e.stopPropagation(); activate(ws, s); };
+  if (!s._pending) {
+    const acts = document.createElement('span'); acts.className = 'sub-acts';
+    acts.appendChild(subBtn('⑂', 'fork', () => forkSession(ws, s)));
+    acts.appendChild(subBtn('✎', 'rename', () => renameSession(ws, s)));
+    acts.appendChild(subBtn('🗑', 'delete', () => deleteSession(ws, s)));
+    li.appendChild(acts);
+  }
+  li.onclick = (e) => { e.stopPropagation(); activate(ws, s._pending ? pending.get(ws).desc : s); };
   return li;
 }
 async function newSession(ws) {
@@ -415,12 +430,38 @@ async function newSession(ws) {
     validate: (v) => (!v ? 'Enter a project name' : (!/^[A-Za-z0-9._-]+$/.test(v) ? 'Letters / digits / . _ - only' : '')),
   });
   if (!proj) return;
-  activate(ws, { fresh: true, cwd: '/home/coder/' + proj, title: 'new…' });
-  setTimeout(() => refreshSessions(ws), 2600); // re-enumerate so the created session appears in the tree
+  const cwd = '/home/coder/' + proj;
+  const desc = { fresh: true, cwd, title: proj };
+  pending.set(ws, { key: sessKey(ws, 'new:' + cwd), cwd, project: proj, title: proj, desc });
+  activate(ws, desc);
+  adoptLoop(ws);
 }
 function forkSession(ws, s) {
-  activate(ws, { fresh: true, cwd: s.cwd, fork: s.id, title: 'fork…' });
-  setTimeout(() => refreshSessions(ws), 2600);
+  const desc = { fresh: true, cwd: s.cwd, fork: s.id, title: (s.title || 'session') + ' (fork)' };
+  pending.set(ws, { key: sessKey(ws, 'fork:' + s.id), cwd: s.cwd, project: s.project || projName(s.cwd), title: desc.title, fork: s.id, seen: new Set((sessCache.get(ws) || []).map((x) => x.id)), desc });
+  activate(ws, desc);
+  adoptLoop(ws);
+}
+// Re-enumerate until the pending session gets a transcript, then adopt it: rebind its live pane to
+// the real id so the tree row and the running claude are the same (no orphaned second process).
+function adoptLoop(ws) {
+  let tries = 0;
+  const iv = setInterval(async () => {
+    tries++;
+    await loadSessions(ws, true);
+    const p = pending.get(ws);
+    if (!p) { clearInterval(iv); return; }
+    const list = sessCache.get(ws) || [];
+    const adopted = p.fork ? list.find((s) => s.cwd === p.cwd && !p.seen.has(s.id)) : list.find((s) => s.cwd === p.cwd && !s.main);
+    if (adopted) {
+      const pane = sessions.get(p.key); const newKey = sessKey(ws, adopted.id);
+      if (pane && !sessions.has(newKey)) { sessions.delete(p.key); pane.sid = adopted.id; pane.isMain = false; pane.label = adopted.title || adopted.id; sessions.set(newKey, pane); }
+      if (active === p.key) { active = newKey; activeSess = adopted; }
+      pending.delete(ws); clearInterval(iv);
+    }
+    renderList(searchVal()); updateHdr();
+    if (tries >= 16) clearInterval(iv); // ~40s; keep the provisional row if the user never sent a turn
+  }, 2500);
 }
 async function renameSession(ws, s) {
   const nm = await uiPrompt({ title: 'Rename session', value: s.title, ok: 'Save', validate: (v) => (v ? '' : 'Enter a name') });
