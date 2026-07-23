@@ -25,6 +25,11 @@ data "coder_provisioner"     "me" {}
 
 locals {
   owner_name = data.coder_workspace_owner.me.full_name != "" && data.coder_workspace_owner.me.full_name != "default" ? data.coder_workspace_owner.me.full_name : split("@", data.coder_workspace_owner.me.email)[0]
+  # Public wildcard URLs for the pre-wired ports (same host format as the switcher/apps).
+  access_host = replace(replace(data.coder_workspace.me.access_url, "https://", ""), "http://", "")
+  app_suffix  = "--${lower(data.coder_workspace.me.name)}--${lower(data.coder_workspace_owner.me.name)}.${local.access_host}"
+  web_url     = "https://web${local.app_suffix}"
+  api_url     = "https://api${local.app_suffix}"
 }
 
 resource "coder_agent" "main" {
@@ -32,9 +37,12 @@ resource "coder_agent" "main" {
   os   = "linux"
 
   env = {
-    CODER_URL         = data.coder_workspace.me.access_url
-    CODER_OWNER_NAME  = local.owner_name
-    CODER_OWNER_EMAIL = data.coder_workspace_owner.me.email
+    CODER_URL           = data.coder_workspace.me.access_url
+    CODER_OWNER_NAME    = local.owner_name
+    CODER_OWNER_EMAIL   = data.coder_workspace_owner.me.email
+    WEB_PUBLIC_URL      = local.web_url
+    API_PUBLIC_URL      = local.api_url
+    DISABLE_AUTOUPDATER = "1" # claude-code is system-installed (root) → its self-update can't write; update via image rebuild
   }
 
   startup_script = file("${path.root}/startup.sh")

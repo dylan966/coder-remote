@@ -23,7 +23,7 @@ export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 CJ="$HOME/.claude.json"; [ -f "$CJ" ] || echo '{}' >"$CJ"
 jq '.hasCompletedOnboarding = true | .projects["/home/coder"] = ((.projects["/home/coder"] // {}) + {hasTrustDialogAccepted:true, hasCompletedProjectOnboarding:true})' "$CJ" >"$CJ.tmp" 2>/dev/null && mv "$CJ.tmp" "$CJ"
 mkdir -p "$HOME/.claude"; SJ="$HOME/.claude/settings.json"; [ -f "$SJ" ] || echo '{}' >"$SJ"
-jq '. + {skipDangerousModePermissionPrompt:true, theme:"dark", model:"opus[1m]", statusLine:{type:"command", command:"node /opt/claude-hud/dist/index.js"}}' "$SJ" >"$SJ.tmp" 2>/dev/null && mv "$SJ.tmp" "$SJ"
+jq '. + {skipDangerousModePermissionPrompt:true, theme:"dark", model:"opus[1m]", autoUpdates:false, statusLine:{type:"command", command:"node /opt/claude-hud/dist/index.js"}}' "$SJ" >"$SJ.tmp" 2>/dev/null && mv "$SJ.tmp" "$SJ"
 for _i in $(seq 1 30); do command -v claude >/dev/null 2>&1 && break; sleep 1; done
 if compgen -G "$HOME/.claude/projects/-home-coder/*.jsonl" >/dev/null 2>&1; then
   jq 'del(.projects["/home/coder"].lastSessionId)' "$CJ" >"$CJ.tmp" 2>/dev/null && mv "$CJ.tmp" "$CJ"
@@ -34,6 +34,23 @@ fi
 EOSH
 chmod +x /home/coder/.start-claude.sh
 log "wrote /home/coder/.start-claude.sh (claude bypass @ /home/coder)"
+
+# Tell claude about the two proxied ports + their public URLs (user-global memory, always loaded).
+mkdir -p /home/coder/.claude
+cat >/home/coder/.claude/CLAUDE.md <<EOF
+# scratch workspace — networking (important)
+
+This workspace exposes exactly **two ports** through Coder's public wildcard domain.
+When you run a dev server, use these ports so it is reachable from the browser:
+
+- **Web / frontend → port 3000** → public URL: ${WEB_PUBLIC_URL:-https://web--scratch--<owner>.coder.gmaster888.com}
+- **API / backend → port 8000** → public URL: ${API_PUBLIC_URL:-https://api--scratch--<owner>.coder.gmaster888.com}
+
+Bind to localhost:3000 / localhost:8000 (Coder proxies them). **Other ports are NOT
+proxied** (no public URL), so prefer 3000/8000. Opening these URLs requires the owner to
+be logged into Coder. These links also appear in the "Workspaces 切换器" quick-links.
+EOF
+log "wrote /home/coder/.claude/CLAUDE.md (port + public-url guidance)"
 
 cat <<'EOF'
 
