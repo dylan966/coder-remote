@@ -16,6 +16,7 @@ ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl wget gnupg sudo \
         git jq tmux less procps iproute2 openssh-client \
+        ripgrep python3 \
         locales tzdata \
     && sed -i 's/^# *\(en_US.UTF-8\)/\1/' /etc/locale.gen \
     && locale-gen \
@@ -35,6 +36,14 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 # `coder ssh` the switcher shells out to) ------
 RUN curl -fsSL https://coder.gmaster888.com/install.sh | sh \
     && coder version || true
+
+# ---- Claude Code (this hub doubles as a claude workspace: ?ws=coder-remote) ----
+RUN npm install -g @anthropic-ai/claude-code \
+    && (claude --version || true)
+
+# ---- uv / uvx (run MCP servers + python tooling for claude; manages its own python) ----
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh \
+    && uv --version && uvx --version
 
 # ---- coder user ----------------------------------------------------------------
 ARG USERNAME=coder

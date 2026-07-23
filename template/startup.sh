@@ -49,6 +49,32 @@ else
 fi
 unset TOKEN
 
+# ---- 3b. claude workspace (this hub also serves ?ws=coder-remote as a claude session) ----
+# The switcher's PTY command (config.claudeCmd) attaches `tmux new-session -A -s claude
+# /home/coder/.start-claude.sh`, so provide that launcher: it runs claude in bypass mode
+# under /home/coder/projects/init. Auth comes from the claude-token secret
+# (CLAUDE_CODE_OAUTH_TOKEN), injected automatically since this is the owner's workspace.
+mkdir -p /home/coder/projects/init
+cat >/home/coder/.start-claude.sh <<'EOSH'
+#!/usr/bin/env bash
+cd /home/coder/projects/init
+export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
+# Pre-trust the folder + skip the dangerous-mode prompt so unattended launch doesn't hang.
+CJ="$HOME/.claude.json"; [ -f "$CJ" ] || echo '{}' >"$CJ"
+jq '.projects["/home/coder/projects/init"] = ((.projects["/home/coder/projects/init"] // {}) + {hasTrustDialogAccepted:true, hasCompletedProjectOnboarding:true})' "$CJ" >"$CJ.tmp" 2>/dev/null && mv "$CJ.tmp" "$CJ"
+mkdir -p "$HOME/.claude"; SJ="$HOME/.claude/settings.json"; [ -f "$SJ" ] || echo '{}' >"$SJ"
+jq '. + {skipDangerousModePermissionPrompt:true}' "$SJ" >"$SJ.tmp" 2>/dev/null && mv "$SJ.tmp" "$SJ"
+for _i in $(seq 1 30); do command -v claude >/dev/null 2>&1 && break; sleep 1; done
+# Resume the latest conversation if any, else start fresh. Always bypass permissions.
+if compgen -G "$HOME/.claude/projects/-home-coder-projects-init/*.jsonl" >/dev/null 2>&1; then
+  exec claude --dangerously-skip-permissions --continue
+else
+  exec claude --dangerously-skip-permissions
+fi
+EOSH
+chmod +x /home/coder/.start-claude.sh
+log "wrote /home/coder/.start-claude.sh (claude bypass @ /home/coder/projects/init)"
+
 # ---- 4. Start the service (tmux, idempotent: skip if :8080 already in use) ----
 if ss -tln 2>/dev/null | grep -q ':8080'; then
     log "switcher already on :8080, skipping start"
