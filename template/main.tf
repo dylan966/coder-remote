@@ -106,7 +106,7 @@ resource "coder_script" "token_refresh" {
   agent_id     = coder_agent.main.id
   display_name = "Token auto-refresh"
   icon         = "/emojis/1f501.png" # 🔁
-  cron         = "0 4 * * *"         # daily 04:00, well within the 7-day window
+  cron         = "0 0 4 * * *"       # 6-field (sec min hour dom mon dow): daily 04:00
   run_on_start = false               # startup.sh already logs in from the secret on boot
   script       = file("${path.root}/token-refresh.sh")
 }
