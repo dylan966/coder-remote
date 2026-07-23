@@ -45,6 +45,11 @@ RUN npm install -g @anthropic-ai/claude-code \
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh \
     && uv --version && uvx --version
 
+# ---- claude-hud (statusline HUD → node /opt/claude-hud/dist/index.js) ----
+RUN git clone --depth 1 https://github.com/jarrodwatts/claude-hud /opt/claude-hud \
+    && cd /opt/claude-hud && npm ci && npm run build \
+    && test -f dist/index.js && echo "claude-hud built"
+
 # ---- coder user ----------------------------------------------------------------
 ARG USERNAME=coder
 ARG USER_UID=1000

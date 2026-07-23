@@ -179,49 +179,6 @@ function sendToActive(data) {
 
 let workspaces = [];
 let stoppedOpen = false; // "Stopped" group collapsed by default
-
-// ---- workspace context menu: right-click (desktop) / long-press (mobile) → delete ----
-let ctxMenuEl = null;
-let justLongPressed = false;
-function hideCtxMenu() { if (ctxMenuEl) { ctxMenuEl.remove(); ctxMenuEl = null; } }
-document.addEventListener('click', hideCtxMenu);
-document.addEventListener('scroll', hideCtxMenu, true);
-function showWsMenu(x, y, w) {
-  hideCtxMenu();
-  const m = document.createElement('div'); m.className = 'ctxmenu';
-  const del = document.createElement('button');
-  del.className = 'ctx-del'; del.textContent = '🗑  Delete workspace';
-  del.addEventListener('click', (e) => { e.stopPropagation(); hideCtxMenu(); deleteWs(w.name); });
-  m.appendChild(del);
-  document.body.appendChild(m); ctxMenuEl = m;
-  m.style.left = Math.min(x, window.innerWidth - m.offsetWidth - 8) + 'px';
-  m.style.top = Math.min(y, window.innerHeight - m.offsetHeight - 8) + 'px';
-}
-async function deleteWs(name) {
-  if (!confirm(`Delete workspace "${name}"?\nThis destroys the workspace and its data.`)) return;
-  try {
-    const r = await fetch('/api/delete?ws=' + encodeURIComponent(name), { method: 'POST' });
-    if (!r.ok) { const b = await r.json().catch(() => ({})); alert('Delete failed: ' + (b.error || r.status)); return; }
-  } catch (e) { alert('Delete failed: ' + e.message); return; }
-  if (name === active) { // tearing down the currently-open one
-    const s = sessions.get(name); if (s) { try { s.sock.close(); } catch (_) {} s.el.remove(); sessions.delete(name); }
-    active = null;
-    const cf = document.getElementById('chatframe'); cf.removeAttribute('data-ws'); cf.src = 'about:blank';
-    app.classList.remove('showchat'); updateHdr();
-  }
-  refresh();
-}
-function attachWsMenu(li, w) {
-  li.addEventListener('contextmenu', (e) => { e.preventDefault(); showWsMenu(e.clientX, e.clientY, w); });
-  let t = null, sx = 0, sy = 0;
-  li.addEventListener('touchstart', (e) => {
-    const to = e.touches[0]; sx = to.clientX; sy = to.clientY;
-    t = setTimeout(() => { t = null; justLongPressed = true; showWsMenu(sx, sy, w); if (navigator.vibrate) navigator.vibrate(15); setTimeout(() => { justLongPressed = false; }, 500); }, 500);
-  }, { passive: true });
-  const cancel = () => { if (t) { clearTimeout(t); t = null; } };
-  li.addEventListener('touchend', cancel); li.addEventListener('touchmove', cancel); li.addEventListener('touchcancel', cancel);
-}
-
 function makeLi(w) {
   const li = document.createElement('li');
   const dot = document.createElement('span');
@@ -233,11 +190,9 @@ function makeLi(w) {
   if (w.name === active) cls.push('active');
   li.className = cls.join(' ');
   li.onclick = () => {
-    if (justLongPressed) { justLongPressed = false; return; } // long-press opened the menu; don't activate
     if (w.status === 'running') return activate(w.name);
     if (confirm(`Start workspace "${w.name}"?`)) startAndAttach(w.name);
   };
-  attachWsMenu(li, w);
   return li;
 }
 function renderList(filter = '') {

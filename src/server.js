@@ -39,6 +39,10 @@ function serveStatic(req, res) {
   fs.readFile(file, (e, buf) => {
     if (e) { res.statusCode = 404; return res.end('not found'); }
     res.setHeader('content-type', MIME[path.extname(file)] || 'application/octet-stream');
+    // App files (html/js/css) must never be served stale — otherwise an old app.js keeps
+    // an already-fixed bug alive in the browser. Third-party vendor assets are versioned
+    // and rarely change, so let them cache.
+    res.setHeader('cache-control', p.startsWith('/vendor/') ? 'public, max-age=86400' : 'no-cache');
     res.end(buf);
   });
 }
@@ -50,7 +54,6 @@ const server = http.createServer(async (req, res) => {
   try {
     if (u.pathname === '/api/workspaces') return json({ workspaces: await client.listWorkspaces() });
     if (u.pathname === '/api/start' && req.method === 'POST') { await client.startWorkspace(u.searchParams.get('ws')); return json({ ok: true }); }
-    if (u.pathname === '/api/delete' && req.method === 'POST') { await client.deleteWorkspace(u.searchParams.get('ws')); return json({ ok: true }); }
     if (u.pathname === '/api/upload' && req.method === 'POST') {
       // receive base64 → temp file → coder cp into the target workspace's ~/.switcher-uploads/, returning the absolute path inside the workspace.
       const wsName = u.searchParams.get('ws');

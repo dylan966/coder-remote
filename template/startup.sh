@@ -64,7 +64,7 @@ CJ="$HOME/.claude.json"; [ -f "$CJ" ] || echo '{}' >"$CJ"
 # the project block pre-trusts the folder. Both are needed for an unattended launch.
 jq '.hasCompletedOnboarding = true | .projects["/home/coder"] = ((.projects["/home/coder"] // {}) + {hasTrustDialogAccepted:true, hasCompletedProjectOnboarding:true})' "$CJ" >"$CJ.tmp" 2>/dev/null && mv "$CJ.tmp" "$CJ"
 mkdir -p "$HOME/.claude"; SJ="$HOME/.claude/settings.json"; [ -f "$SJ" ] || echo '{}' >"$SJ"
-jq '. + {skipDangerousModePermissionPrompt:true, theme:"dark", model:"opus[1m]"}' "$SJ" >"$SJ.tmp" 2>/dev/null && mv "$SJ.tmp" "$SJ"
+jq '. + {skipDangerousModePermissionPrompt:true, theme:"dark", model:"opus[1m]", statusLine:{type:"command", command:"node /opt/claude-hud/dist/index.js"}}' "$SJ" >"$SJ.tmp" 2>/dev/null && mv "$SJ.tmp" "$SJ"
 for _i in $(seq 1 30); do command -v claude >/dev/null 2>&1 && break; sleep 1; done
 # Resume the latest conversation if any, else start fresh. Always bypass permissions.
 if compgen -G "$HOME/.claude/projects/-home-coder/*.jsonl" >/dev/null 2>&1; then
