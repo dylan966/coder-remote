@@ -218,7 +218,9 @@ function renderSessions(list) {
     return;
   }
   const e = log.querySelector('.empty'); if (e) e.remove();
-  if (freshMode) { const nw = sessions[0]; currentSession = nw.id; currentCwd = nw.cwd; currentIsMain = !!nw.main; freshMode = false; ptyExtra = {}; } // adopt newest after create/fork
+  // adopt the new session only once it appears with our target cwd (a fresh session with no
+  // messages yet isn't enumerated). Until then stay in freshMode (chat follows the newest file).
+  if (freshMode) { const nw = sessions.find((s) => s.cwd === currentCwd); if (nw) { currentSession = nw.id; currentIsMain = !!nw.main; freshMode = false; ptyExtra = {}; } }
   if (!currentSession) { const m = sessions.find((s) => s.main) || sessions[0]; currentSession = m.id; currentCwd = m.cwd; currentIsMain = !!m.main; }
   sessbtn.textContent = curLabel() + ' ▾';
   if (sesspanel.classList.contains('show')) buildPanel();
