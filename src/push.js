@@ -21,9 +21,15 @@ function writeJson(file, val) {
 let vapid = null;
 let enabled = false;
 if (webpush) {
-  vapid = readJson(VAPID_FILE, null);
-  if (!vapid || !vapid.publicKey || !vapid.privateKey) {
-    try { vapid = webpush.generateVAPIDKeys(); writeJson(VAPID_FILE, vapid); } catch (e) { console.error('[push] vapid gen', e.message); vapid = null; }
+  // Prefer keys from env (coder secret) so the hub is stateless — recreating it keeps the same
+  // VAPID keys, so existing push subscriptions stay valid. Fall back to a local file / generate.
+  if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+    vapid = { publicKey: process.env.VAPID_PUBLIC_KEY, privateKey: process.env.VAPID_PRIVATE_KEY };
+  } else {
+    vapid = readJson(VAPID_FILE, null);
+    if (!vapid || !vapid.publicKey || !vapid.privateKey) {
+      try { vapid = webpush.generateVAPIDKeys(); writeJson(VAPID_FILE, vapid); } catch (e) { console.error('[push] vapid gen', e.message); vapid = null; }
+    }
   }
   if (vapid) {
     // a mailto placeholder is fine for the subject; browser push services only require it to be present.

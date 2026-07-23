@@ -58,6 +58,16 @@ const server = http.createServer(async (req, res) => {
       return json({ workspaces: self ? list.filter((w) => w.name !== self) : list });
     }
     if (u.pathname === '/api/start' && req.method === 'POST') { await client.startWorkspace(u.searchParams.get('ws')); return json({ ok: true }); }
+    if (u.pathname === '/api/sessions') { // enumerate a workspace's sessions once (grouped-by-project data for the sidebar tree)
+      const wsName = u.searchParams.get('ws');
+      if (!wsName) return json({ error: 'missing ws' }, 400);
+      try {
+        await ensureSessPy(wsName);
+        const out = await execFileP('coder', ['ssh', wsName, '--', 'LIST_ONLY=1 python3 ~/.switcher/sess.py'], { timeout: 25000, maxBuffer: 8 * 1024 * 1024 });
+        const line = (out || '').split('\n').find((l) => l.indexOf('##SESSIONS##') >= 0);
+        return json({ sessions: line ? JSON.parse(line.slice(line.indexOf('##SESSIONS##') + 12)) : [] });
+      } catch (e) { return json({ sessions: [], error: String(e.message || e) }); }
+    }
     if (u.pathname === '/api/upload' && req.method === 'POST') {
       // receive base64 → temp file → coder cp into the target workspace's ~/.switcher-uploads/, returning the absolute path inside the workspace.
       const wsName = u.searchParams.get('ws');
@@ -310,6 +320,7 @@ def _proj(c):
 listing = [{'id': s['id'], 'title': names.get(s['id']) or s['title'], 'n': s['n'], 'mtime': int(s['mtime']),
             'cwd': s.get('cwd', ''), 'project': _proj(s.get('cwd', '')), 'main': s['id'] == main_id} for s in keep]
 print('##SESSIONS##' + json.dumps(listing, ensure_ascii=False)); sys.stdout.flush()
+if os.environ.get('LIST_ONLY'): sys.exit(0)  # enumerate-only (for /api/sessions); skip the tail
 target = files.get(want) if want else None
 if os.environ.get('FRESH'):  # new session: follow the "latest" file (even if it has no messages yet)
     allf = [g for g in glob.glob(base + '/*/*.jsonl') if os.sep + 'subagents' + os.sep not in g]
