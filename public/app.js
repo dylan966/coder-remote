@@ -25,6 +25,18 @@ const pending = new Map();        // ws -> { key, cwd, project, title, desc, for
 let pendingWs = new URLSearchParams(location.search).get('ws'); // on refresh, auto-open per URL
 function sessKey(ws, sid) { return ws + '\n' + (sid || ''); }
 function searchVal() { const s = document.getElementById('search'); return s ? s.value : ''; }
+// Cap how many desktop terminal panes stay resident: each is a live PTY, so keep only the most
+// recently viewed ~6. Disposed panes reattach cleanly on reopen (tmux new-session -A → cl-<id8>).
+const MAX_PANES = 6;
+let viewSeq = 0;
+function capPanes() {
+  if (sessions.size <= MAX_PANES) return;
+  const victims = [...sessions.entries()].filter(([k]) => k !== active).sort((a, b) => (a[1].lastView || 0) - (b[1].lastView || 0));
+  while (sessions.size > MAX_PANES && victims.length) {
+    const [k, s] = victims.shift();
+    try { s.sock.close(); } catch (_) {} try { s.term.dispose(); } catch (_) {} s.el.remove(); sessions.delete(k);
+  }
+}
 function projName(cwd) { if (!cwd) return '(unknown)'; if (cwd === '/home/coder') return '~'; return cwd.replace(/\/+$/, '').split('/').pop() || cwd; }
 
 function notifyDone(s) {
@@ -227,10 +239,12 @@ function activate(ws, sess) {
   cf.removeAttribute('data-ws'); cf.removeAttribute('data-src'); cf.src = 'about:blank';   // disconnect the embedded page
   sessions.forEach((sv, n) => { if (n !== key) sv.el.style.display = 'none'; });
   const s = sessions.get(key) || makeSession(ws, opts);
+  s.lastView = ++viewSeq;
   s.el.style.display = 'block';
   openTerm(s);  // open now that the pane is visible → correct cell metrics (avoids 1/4-size)
   s.term.focus();
   fitSoon(s);   // defer: pane just switched from display:none, layout not settled yet
+  capPanes();   // retire the least-recently-viewed pane(s) beyond the cap (they reattach on reopen)
   renderList(searchVal()); updateHdr();
   // Pull this workspace's session list (for the tree + top-right switcher) if not cached yet.
   if (!sessCache.has(ws)) loadSessions(ws).then(() => { renderList(searchVal()); updateHdr(); });
@@ -469,6 +483,8 @@ function adoptLoop(ws) {
     } catch (_) {}
     if (found) {
       try { fetch('/api/session/register?ws=' + encodeURIComponent(ws), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: found.id, cwd: p.cwd, parent: p.fork || '' }) }); } catch (_) {}
+      // give a fork a distinct display name ("<parent> (fork)") so it doesn't collide with its parent
+      if (p.fork && p.title) { try { await fetch('/api/session/rename?ws=' + encodeURIComponent(ws), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: found.id, name: p.title }) }); } catch (_) {} }
       const pane = sessions.get(p.key); const newKey = sessKey(ws, found.id);
       if (pane && !sessions.has(newKey)) { sessions.delete(p.key); pane.sid = found.id; pane.isMain = false; sessions.set(newKey, pane); }
       if (active === p.key) active = newKey;

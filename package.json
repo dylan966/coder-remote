@@ -4,7 +4,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test",
+    "test": "node --test && python3 src/remote/test_sess.py",
     "smoke": "node smoke/coder-client.smoke.js"
   },
   "keywords": [],
