@@ -62,12 +62,33 @@ const server = http.createServer(async (req, res) => {
       const wsName = u.searchParams.get('ws');
       if (!wsName) return json({ error: 'missing ws' }, 400);
       try {
+        // Cheap signature (file count + newest mtime) first: the full scan reads every transcript
+        // line, so skip it when nothing changed since last time (repeated sidebar expands / refresh).
+        let sig = '';
+        try { sig = (await execFileP('coder', ['ssh', wsName, '--', "ls ~/.claude/projects/*/*.jsonl 2>/dev/null | wc -l; find ~/.claude/projects -name '*.jsonl' -printf '%T@\\n' 2>/dev/null | sort -rn | head -1"], { timeout: 15000 })).replace(/\s+/g, ' ').trim(); } catch (_) {}
+        const cached = enumCache.get(wsName);
+        if (sig && cached && cached.sig === sig) return json({ sessions: cached.listing });
         await ensureSessPy(wsName);
         maybeReap(wsName);
         const out = await execFileP('coder', ['ssh', wsName, '--', 'LIST_ONLY=1 python3 ~/.switcher/sess.py'], { timeout: 25000, maxBuffer: 8 * 1024 * 1024 });
         const line = (out || '').split('\n').find((l) => l.indexOf('##SESSIONS##') >= 0);
-        return json({ sessions: line ? JSON.parse(line.slice(line.indexOf('##SESSIONS##') + 12)) : [] });
+        const listing = line ? JSON.parse(line.slice(line.indexOf('##SESSIONS##') + 12)) : [];
+        if (sig) enumCache.set(wsName, { sig, listing });
+        return json({ sessions: listing });
       } catch (e) { return json({ sessions: [], error: String(e.message || e) }); }
+    }
+    if (u.pathname === '/api/session/find') {
+      // Cheap adopt probe: list session ids + mtime in just ONE project dir (the cwd being created/
+      // forked into) — globs the dir, reads no files. Used by the frontend adopt loop so it doesn't
+      // full-scan every 2.5s while waiting for a new session's transcript to appear.
+      const wsName = u.searchParams.get('ws');
+      const cwd = /^\/[A-Za-z0-9._/-]+$/.test(u.searchParams.get('cwd') || '') ? u.searchParams.get('cwd') : '';
+      if (!wsName || !cwd) return json({ error: 'bad params' }, 400);
+      const slug = '-' + cwd.replace(/^\//, '').replace(/[/._\\:]/g, '-'); // claude's project-dir naming
+      const cmd = `for f in ~/.claude/projects/'${slug}'/*.jsonl; do [ -e "$f" ] || continue; printf '%s %s\\n' "$(basename "$f" .jsonl)" "$(stat -c %Y "$f" 2>/dev/null || echo 0)"; done`;
+      let out = ''; try { out = await execFileP('coder', ['ssh', wsName, '--', cmd], { timeout: 15000 }); } catch (_) {}
+      const ids = out.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => { const sp = l.split(' '); return { id: sp[0], mtime: parseInt(sp[1], 10) || 0 }; }).filter((x) => /^[0-9a-fA-F-]{8,}$/.test(x.id));
+      return json({ ids });
     }
     if (u.pathname === '/api/upload' && req.method === 'POST') {
       // receive base64 → temp file → coder cp into the target workspace's ~/.switcher-uploads/, returning the absolute path inside the workspace.
@@ -121,6 +142,7 @@ const server = http.createServer(async (req, res) => {
       const cmd = `mkdir -p ~/.switcher; F=~/.switcher/names.json; [ -f "$F" ] || echo '{}' >"$F"; ` +
         `N=$(printf %s '${nb}' | base64 -d); jq --arg i '${id}' --arg n "$N" '.[$i]=$n' "$F" >"$F.t" && mv "$F.t" "$F"`;
       await execFileP('coder', ['ssh', wsName, '--', cmd], { timeout: 20000 });
+      enumCache.delete(wsName); // a rename doesn't change any transcript file, so the signature won't; drop it
       return json({ ok: true });
     }
     if (u.pathname === '/api/session/delete' && req.method === 'POST') {
@@ -401,7 +423,8 @@ async function ensureSessPy(ws) {
 // Opportunistic idle-reaper: kill per-session tmuxes (cl-/clf-/cln-) that have no client attached
 // and have been idle > 3h, on any workspace the switcher touches. Throttled to once / 30 min per ws,
 // fire-and-forget so it never slows a request. The main "claude" session is never touched.
-const reapAt = new Map(); // ws -> last-reap epoch ms
+const reapAt = new Map();    // ws -> last-reap epoch ms
+const enumCache = new Map(); // ws -> {sig, listing} — /api/sessions cache, keyed by a cheap file signature
 function maybeReap(ws) {
   if (!ws) return;
   const now = Date.now();

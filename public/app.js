@@ -442,34 +442,41 @@ async function newSession(ws) {
   activate(ws, desc);
   adoptLoop(ws);
 }
-function forkSession(ws, s) {
+async function forkSession(ws, s) {
+  // Snapshot the raw transcript ids in the target cwd BEFORE forking, so adopt can tell the new
+  // fork apart from the parent + any resume-chain files already there (all share the same cwd).
+  let seen = new Set();
+  try { const j = await fetch('/api/session/find?ws=' + encodeURIComponent(ws) + '&cwd=' + encodeURIComponent(s.cwd || '')).then((r) => r.json()); seen = new Set((j.ids || []).map((x) => x.id)); } catch (_) {}
   const desc = { fresh: true, cwd: s.cwd, fork: s.id, title: (s.title || 'session') + ' (fork)' };
-  pending.set(ws, { key: sessKey(ws, 'fork:' + s.id), cwd: s.cwd, project: s.project || projName(s.cwd), title: desc.title, fork: s.id, seen: new Set((sessCache.get(ws) || []).map((x) => x.id)), desc });
+  pending.set(ws, { key: sessKey(ws, 'fork:' + s.id), cwd: s.cwd, project: s.project || projName(s.cwd), title: desc.title, fork: s.id, seen, desc });
   activate(ws, desc);
   adoptLoop(ws);
 }
-// Re-enumerate until the pending session gets a transcript, then adopt it: rebind its live pane to
-// the real id so the tree row and the running claude are the same (no orphaned second process).
+// Poll the cheap per-cwd `find` (no full scan) until the pending session's transcript appears, then
+// adopt it: rename its launch tmux → cl-<id8> (register), rebind its live pane to the real id (so the
+// tree row and the running claude are the same, no orphaned second process), and do ONE full refresh.
 function adoptLoop(ws) {
   let tries = 0;
   const iv = setInterval(async () => {
     tries++;
-    await loadSessions(ws, true);
     const p = pending.get(ws);
     if (!p) { clearInterval(iv); return; }
-    const list = sessCache.get(ws) || [];
-    const adopted = p.fork ? list.find((s) => s.cwd === p.cwd && !p.seen.has(s.id)) : list.find((s) => s.cwd === p.cwd && !s.main);
-    if (adopted) {
-      // Rename the launch tmux → cl-<id8> so reopening attaches the same claude (not a second one);
-      // also records forks so enumeration keeps both the fork and its parent.
-      try { fetch('/api/session/register?ws=' + encodeURIComponent(ws), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: adopted.id, cwd: p.cwd, parent: p.fork || '' }) }); } catch (_) {}
-      const pane = sessions.get(p.key); const newKey = sessKey(ws, adopted.id);
-      if (pane && !sessions.has(newKey)) { sessions.delete(p.key); pane.sid = adopted.id; pane.isMain = false; pane.label = adopted.title || adopted.id; sessions.set(newKey, pane); }
-      if (active === p.key) { active = newKey; activeSess = adopted; }
+    let found = null;
+    try {
+      const j = await fetch('/api/session/find?ws=' + encodeURIComponent(ws) + '&cwd=' + encodeURIComponent(p.cwd)).then((r) => r.json());
+      const cands = (j.ids || []).filter((x) => (p.seen ? !p.seen.has(x.id) : true)).sort((a, b) => b.mtime - a.mtime);
+      found = cands[0] || null; // newest transcript in this cwd that wasn't there before = the new session
+    } catch (_) {}
+    if (found) {
+      try { fetch('/api/session/register?ws=' + encodeURIComponent(ws), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: found.id, cwd: p.cwd, parent: p.fork || '' }) }); } catch (_) {}
+      const pane = sessions.get(p.key); const newKey = sessKey(ws, found.id);
+      if (pane && !sessions.has(newKey)) { sessions.delete(p.key); pane.sid = found.id; pane.isMain = false; sessions.set(newKey, pane); }
+      if (active === p.key) active = newKey;
       pending.delete(ws); clearInterval(iv);
-    }
-    renderList(searchVal()); updateHdr();
-    if (tries >= 16) clearInterval(iv); // ~40s; keep the provisional row if the user never sent a turn
+      await loadSessions(ws, true); // one full refresh so the tree shows the real, enumerated row
+      if (active === newKey) activeSess = (sessCache.get(ws) || []).find((x) => x.id === found.id) || activeSess;
+      renderList(searchVal()); updateHdr();
+    } else if (tries >= 16) { clearInterval(iv); } // ~40s; keep the provisional row if no turn was sent
   }, 2500);
 }
 async function renameSession(ws, s) {
