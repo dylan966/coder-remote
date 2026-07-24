@@ -63,6 +63,7 @@ const server = http.createServer(async (req, res) => {
       if (!wsName) return json({ error: 'missing ws' }, 400);
       try {
         await ensureSessPy(wsName);
+        maybeReap(wsName);
         const out = await execFileP('coder', ['ssh', wsName, '--', 'LIST_ONLY=1 python3 ~/.switcher/sess.py'], { timeout: 25000, maxBuffer: 8 * 1024 * 1024 });
         const line = (out || '').split('\n').find((l) => l.indexOf('##SESSIONS##') >= 0);
         return json({ sessions: line ? JSON.parse(line.slice(line.indexOf('##SESSIONS##') + 12)) : [] });
@@ -145,19 +146,27 @@ const server = http.createServer(async (req, res) => {
       await execFileP('coder', ['ssh', wsName, '--', cmd], { timeout: 20000 });
       return json({ ok: true });
     }
-    if (u.pathname === '/api/session/markfork' && req.method === 'POST') {
-      // Record a session id as a fork so enumeration keeps both the fork and its parent (a fork is a
-      // subset+diverge of its parent, otherwise indistinguishable from a resume-chain — see SESS_PY).
+    if (u.pathname === '/api/session/register' && req.method === 'POST') {
+      // Called once a freshly created/forked session gets its real id. Renames the launch tmux
+      // (cln-<cwdkey> for new, clf-<parentid8> for fork) → cl-<id8>, so REOPENING the session with
+      // `tmux new-session -A -s cl-<id8>` attaches the SAME live claude instead of starting a second
+      // one (which would corrupt the shared transcript). For forks it also records {forkId:parentId}
+      // (drives dedup: a fork never covers its parent — see SESS_PY).
       const wsName = u.searchParams.get('ws');
       let b; try { b = JSON.parse(await readBody(req, 64 * 1024)); } catch (_) { return json({ error: 'bad request' }, 400); }
       const id = /^[0-9a-fA-F-]{8,}$/.test(b.id || '') ? b.id : '';
       const parent = /^[0-9a-fA-F-]{8,}$/.test(b.parent || '') ? b.parent : '';
+      const cwd = /^\/[A-Za-z0-9._/-]+$/.test(b.cwd || '') ? b.cwd : '';
       if (!wsName || !id) return json({ error: 'bad params' }, 400);
-      // Store {forkId: parentId}: the id set drives dedup (a fork never covers its parent), and the
-      // parent lets delete find the fork's tmux (clf-<parentid8>). Migrate any legacy array form.
-      const cmd = `mkdir -p ~/.switcher; F=~/.switcher/forks.json; [ -f "$F" ] || echo '{}' >"$F"; ` +
-        `jq --arg i '${id}' --arg p '${parent}' 'if type==\"object\" then . else {} end | .[$i]=$p' "$F" >"$F.t" && mv "$F.t" "$F"`;
-      await execFileP('coder', ['ssh', wsName, '--', cmd], { timeout: 20000 });
+      const id8 = id.replace(/[^0-9a-fA-F]/g, '').slice(0, 8);
+      const oldName = parent ? ('clf-' + parent.replace(/[^0-9a-fA-F]/g, '').slice(0, 8))
+        : (cwd ? ('cln-' + cwd.replace(/[^A-Za-z0-9]/g, '').slice(-14)) : '');
+      const parts = [];
+      if (oldName) parts.push(`tmux has-session -t ${oldName} 2>/dev/null && tmux rename-session -t ${oldName} cl-${id8} 2>/dev/null`);
+      if (parent) parts.push(`mkdir -p ~/.switcher; F=~/.switcher/forks.json; [ -f "$F" ] || echo '{}' >"$F"; ` +
+        `jq --arg i '${id}' --arg p '${parent}' 'if type==\"object\" then . else {} end | .[$i]=$p' "$F" >"$F.t" && mv "$F.t" "$F"`);
+      parts.push('true');
+      await execFileP('coder', ['ssh', wsName, '--', parts.join('; ')], { timeout: 20000 });
       return json({ ok: true });
     }
     if (u.pathname === '/api/push/key') return json({ key: push.getPublicKey(), enabled: push.isEnabled() });
@@ -275,6 +284,7 @@ ptyWss.on('connection', async (fe, req) => {
   try {
     const agentId = await resolveAgent(fe, name);
     if (!agentId || feClosed) return;
+    maybeReap(name);
     pty = client.openPty({ agentId, width, height, command: ptyCommand({ session, cwd, fork, nameB64 }) });
     pty.onError(() => { try { fe.close(1011); } catch (_) {} });
     pty.onData((s) => { if (fe.readyState === fe.OPEN) fe.send(s); });     // Coder → frontend (text)
@@ -386,6 +396,20 @@ const SESS_PY_B64 = Buffer.from(SESS_PY, 'utf8').toString('base64');
 // (Piping the whole base64 as one PTY line truncated it once SESS_PY grew past ~4KB.)
 async function ensureSessPy(ws) {
   await execFileP('coder', ['ssh', ws, '--', `mkdir -p ~/.switcher && printf %s '${SESS_PY_B64}' | base64 -d > ~/.switcher/sess.py`], { timeout: 20000 });
+}
+
+// Opportunistic idle-reaper: kill per-session tmuxes (cl-/clf-/cln-) that have no client attached
+// and have been idle > 3h, on any workspace the switcher touches. Throttled to once / 30 min per ws,
+// fire-and-forget so it never slows a request. The main "claude" session is never touched.
+const reapAt = new Map(); // ws -> last-reap epoch ms
+function maybeReap(ws) {
+  if (!ws) return;
+  const now = Date.now();
+  if (now - (reapAt.get(ws) || 0) < 30 * 60 * 1000) return;
+  reapAt.set(ws, now);
+  const cmd = `now=$(date +%s); tmux ls -F '#{session_name} #{session_attached} #{session_activity}' 2>/dev/null | ` +
+    `while read n a act; do case "$n" in cl-*|clf-*|cln-*) [ "$a" = 0 ] && [ $((now-act)) -gt 10800 ] && tmux kill-session -t "$n" 2>/dev/null;; esac; done; true`;
+  execFileP('coder', ['ssh', ws, '--', cmd], { timeout: 20000 }).catch(() => {});
 }
 // session id allows only hex digits and hyphens; validate before interpolating into env, to prevent injection.
 function chatCommand(sessionId, fresh) {

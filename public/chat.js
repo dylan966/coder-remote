@@ -240,7 +240,8 @@ function renderSessions(list) {
       ? sessions.find((s) => s.cwd === currentCwd && s.id !== ptyExtra.fork && (!freshSeen || !freshSeen.has(s.id)))
       : sessions.find((s) => s.cwd === currentCwd);
     if (nw) {
-      if (isFork) { try { fetch('/api/session/markfork?ws=' + encodeURIComponent(wsName), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: nw.id, parent: ptyExtra.fork }) }); } catch (_) {} }
+      // rename the launch tmux → cl-<id8> (reopen attaches the same claude) + record forks for dedup
+      try { fetch('/api/session/register?ws=' + encodeURIComponent(wsName), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: nw.id, cwd: currentCwd, parent: isFork ? ptyExtra.fork : '' }) }); } catch (_) {}
       currentSession = nw.id; currentIsMain = !!nw.main; freshMode = false; ptyExtra = {}; freshSeen = null;
     }
   }

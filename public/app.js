@@ -460,8 +460,9 @@ function adoptLoop(ws) {
     const list = sessCache.get(ws) || [];
     const adopted = p.fork ? list.find((s) => s.cwd === p.cwd && !p.seen.has(s.id)) : list.find((s) => s.cwd === p.cwd && !s.main);
     if (adopted) {
-      // A fork is a subset+diverge of its parent; tell the backend so enumeration keeps both.
-      if (p.fork) { try { fetch('/api/session/markfork?ws=' + encodeURIComponent(ws), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: adopted.id, parent: p.fork }) }); } catch (_) {} }
+      // Rename the launch tmux → cl-<id8> so reopening attaches the same claude (not a second one);
+      // also records forks so enumeration keeps both the fork and its parent.
+      try { fetch('/api/session/register?ws=' + encodeURIComponent(ws), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: adopted.id, cwd: p.cwd, parent: p.fork || '' }) }); } catch (_) {}
       const pane = sessions.get(p.key); const newKey = sessKey(ws, adopted.id);
       if (pane && !sessions.has(newKey)) { sessions.delete(p.key); pane.sid = adopted.id; pane.isMain = false; pane.label = adopted.title || adopted.id; sessions.set(newKey, pane); }
       if (active === p.key) { active = newKey; activeSess = adopted; }
