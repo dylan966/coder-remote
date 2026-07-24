@@ -134,6 +134,18 @@ const server = http.createServer(async (req, res) => {
       await execFileP('coder', ['ssh', wsName, '--', cmd], { timeout: 20000 });
       return json({ ok: true });
     }
+    if (u.pathname === '/api/session/markfork' && req.method === 'POST') {
+      // Record a session id as a fork so enumeration keeps both the fork and its parent (a fork is a
+      // subset+diverge of its parent, otherwise indistinguishable from a resume-chain — see SESS_PY).
+      const wsName = u.searchParams.get('ws');
+      let b; try { b = JSON.parse(await readBody(req, 64 * 1024)); } catch (_) { return json({ error: 'bad request' }, 400); }
+      const id = /^[0-9a-fA-F-]{8,}$/.test(b.id || '') ? b.id : '';
+      if (!wsName || !id) return json({ error: 'bad params' }, 400);
+      const cmd = `mkdir -p ~/.switcher; F=~/.switcher/forks.json; [ -f "$F" ] || echo '[]' >"$F"; ` +
+        `jq --arg i '${id}' '(. + [$i]) | unique' "$F" >"$F.t" && mv "$F.t" "$F"`;
+      await execFileP('coder', ['ssh', wsName, '--', cmd], { timeout: 20000 });
+      return json({ ok: true });
+    }
     if (u.pathname === '/api/push/key') return json({ key: push.getPublicKey(), enabled: push.isEnabled() });
     if (u.pathname === '/api/push/subscribe' && req.method === 'POST') {
       let b; try { b = JSON.parse(await readBody(req, 64 * 1024)); } catch (_) { return json({ error: 'bad request' }, 400); }
@@ -305,15 +317,24 @@ for f in glob.glob(base + '/*/*.jsonl'):
     title = ' '.join(title.split())
     if len(title) > 60: title = title[:57] + '...'
     out.append({'id': os.path.basename(f)[:-6], 'title': title, 'n': n, 'mtime': os.path.getmtime(f), 'cwd': cwd or '', '_ids': sorted(ids), '_f': f})
-# Collapse ONLY exact-duplicate transcripts (identical assistant-message-id sets), keeping the newest.
-# Do NOT drop subsets: a fork copies its parent's message ids then diverges, so the parent is a strict
-# subset of the fork — subset-dedup used to wrongly hide the parent (two sessions collapsed into one).
-best = {}; keep = []
-for s in out:
-    fs = frozenset(s['_ids'])
-    if not fs: keep.append(s); continue
-    if fs not in best or s['mtime'] > best[fs]['mtime']: best[fs] = s
-keep.extend(best.values())
+# Dedup resume-chains: resuming a session replays its messages into a new file, so the old file's
+# id-set is a subset of the new one — drop the subset (keep the live continuation).
+# BUT a fork ALSO copies its parent's ids then diverges, and there both branches are real. Since the
+# transcript doesn't distinguish the two, the switcher records the ids of forks it creates; a fork is
+# never allowed to "cover" (drop) another session, so a fork and its parent both survive.
+forks = set()
+try:
+    with open(os.path.expanduser('~/.switcher/forks.json')) as ff: forks = set(json.load(ff))
+except Exception: forks = set()
+out.sort(key=lambda s: len(s['_ids']))
+keep = []
+for i, s in enumerate(out):
+    si = set(s['_ids']); covered = False
+    if si:
+        for j in range(i + 1, len(out)):
+            if out[j]['id'] in forks: continue
+            if si.issubset(set(out[j]['_ids'])): covered = True; break
+    if not covered: keep.append(s)
 keep.sort(key=lambda s: s['mtime'], reverse=True)
 files = {s['id']: s['_f'] for s in keep}
 # switcher-side display-name overrides (claude has no post-hoc rename CLI)

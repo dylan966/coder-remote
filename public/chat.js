@@ -192,6 +192,7 @@ let currentCwd = '';
 let currentIsMain = !currentSession;   // default click = main session (shares the "claude" tmux with the desktop terminal)
 let freshMode = false;                 // create/fork: follow the newest session file until it's adopted
 let ptyExtra = {};                     // {cwd, fork} for the create/fork PTY launch
+let freshSeen = null;                  // session ids present at fork time (to pick the NEW one, not the parent)
 // The sidebar's "New session" / provisional row deep-links here with a fresh cwd (and fork id):
 // enter freshMode so this chat launches/follows that session rather than the workspace's main.
 if (_q.get('freshcwd')) {
@@ -233,7 +234,16 @@ function renderSessions(list) {
   const e = log.querySelector('.empty'); if (e) e.remove();
   // adopt the new session only once it appears with our target cwd (a fresh session with no
   // messages yet isn't enumerated). Until then stay in freshMode (chat follows the newest file).
-  if (freshMode) { const nw = sessions.find((s) => s.cwd === currentCwd); if (nw) { currentSession = nw.id; currentIsMain = !!nw.main; freshMode = false; ptyExtra = {}; } }
+  if (freshMode) {
+    const isFork = !!ptyExtra.fork;
+    const nw = isFork
+      ? sessions.find((s) => s.cwd === currentCwd && s.id !== ptyExtra.fork && (!freshSeen || !freshSeen.has(s.id)))
+      : sessions.find((s) => s.cwd === currentCwd);
+    if (nw) {
+      if (isFork) { try { fetch('/api/session/markfork?ws=' + encodeURIComponent(wsName), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: nw.id }) }); } catch (_) {} }
+      currentSession = nw.id; currentIsMain = !!nw.main; freshMode = false; ptyExtra = {}; freshSeen = null;
+    }
+  }
   if (!currentSession) { const m = sessions.find((s) => s.main) || sessions[0]; currentSession = m.id; currentCwd = m.cwd; currentIsMain = !!m.main; }
   updateSessBtn();
   if (sesspanel.classList.contains('show')) buildPanel();
@@ -279,6 +289,7 @@ async function onNew() {
 }
 function forkSession(s) {
   closePanel();
+  freshSeen = new Set(sessions.map((x) => x.id)); // remember pre-fork ids so we adopt the NEW branch, not the parent
   currentSession = null; currentIsMain = false; freshMode = true; currentCwd = s.cwd || ''; ptyExtra = { cwd: s.cwd, fork: s.id };
   reconnectAll();
   setTimeout(() => { closeChat(); openChat(); }, 2500);
