@@ -138,14 +138,17 @@ const server = http.createServer(async (req, res) => {
       const id = /^[0-9a-fA-F-]{8,}$/.test(b.id || '') ? b.id : '';
       if (!wsName || !id) return json({ error: 'bad params' }, 400);
       const t8 = id.replace(/[^0-9a-fA-F]/g, '').slice(0, 8);
-      // Kill the session's tmux + any claude bound to it (its cmdline carries the id via --session-id
-      // or --resume) BEFORE removing the transcript, else the live process rewrites it and the session
-      // "comes back". The per-session tmux is always cl-<id8> now (see ptyCommand). Legacy clf-/cln-
-      // names are also swept for safety.
-      const cmd = `set +e; ID='${id}'; T8='${t8}'; ` +
-        `for s in "cl-$T8" "clf-$T8"; do tmux kill-session -t "$s" 2>/dev/null; done; ` +
-        `pkill -f -- "$ID" 2>/dev/null; ` +
-        `rm -f ~/.claude/projects/*/"$ID".jsonl 2>/dev/null; ` +
+      // SIGKILL the claude in the session's tmux pane BEFORE removing the transcript, else the dying
+      // process rewrites the file and the session "comes back". We kill by the pane's process GROUP
+      // (pid-based, never by matching the id in a cmdline — that would also match THIS delete command
+      // and kill our own shell). SIGKILL means no shutdown-write. The per-session tmux is cl-<id8>
+      // (clf-<id8> swept too for legacy). Then rm + drop from names/forks.
+      const cmd = `set +e; ID='${id}'; ` +
+        `for T in "cl-${t8}" "clf-${t8}"; do ` +
+        `PID=$(tmux list-panes -t "$T" -F '#{pane_pid}' 2>/dev/null | head -1); ` +
+        `if [ -n "$PID" ]; then PGID=$(ps -o pgid= -p "$PID" 2>/dev/null | tr -d ' '); [ -n "$PGID" ] && kill -9 -"$PGID" 2>/dev/null; fi; ` +
+        `tmux kill-session -t "$T" 2>/dev/null; done; ` +
+        `sleep 0.3; rm -f ~/.claude/projects/*/"$ID".jsonl 2>/dev/null; ` +
         `NF=~/.switcher/names.json; [ -f "$NF" ] && jq --arg i "$ID" 'del(.[$i])' "$NF" >"$NF.t" 2>/dev/null && mv "$NF.t" "$NF"; ` +
         `FK=~/.switcher/forks.json; [ -f "$FK" ] && jq --arg i "$ID" 'if type==\"object\" then del(.[$i]) else . end' "$FK" >"$FK.t" 2>/dev/null && mv "$FK.t" "$FK"; true`;
       await execFileP('coder', ['ssh', wsName, '--', cmd], { timeout: 20000 });
