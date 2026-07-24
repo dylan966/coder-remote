@@ -267,10 +267,17 @@ const SESS_PY = `
 import json, os, glob, sys
 base = os.path.expanduser('~/.claude/projects')
 want = os.environ.get('SESSION', '').strip()
+def _utext(o):
+    m = o.get('message') or {}; c = m.get('content')
+    if isinstance(c, str): return c.strip()
+    if isinstance(c, list):
+        for p in c:
+            if isinstance(p, dict) and p.get('type') == 'text': return (p.get('text') or '').strip()
+    return ''
 out = []
 for f in glob.glob(base + '/*/*.jsonl'):
     if os.sep + 'subagents' + os.sep in f: continue
-    ai = cust = lp = cwd = None; ids = set(); n = 0
+    ai = cust = cwd = fu = None; ids = set(); n = 0
     try:
         with open(f, encoding='utf-8', errors='replace') as fh:
             for line in fh:
@@ -281,26 +288,32 @@ for f in glob.glob(base + '/*/*.jsonl'):
                 t = o.get('type')
                 if t == 'ai-title': ai = o.get('aiTitle') or ai
                 elif t == 'custom-title': cust = o.get('customTitle') or cust
-                elif t == 'last-prompt': lp = o.get('lastPrompt') or lp
                 elif t == 'user' or t == 'assistant':
                     n += 1
                     if o.get('cwd') and cwd is None: cwd = o.get('cwd')   # first turn's cwd = where the session was launched → project (not where claude wandered to later)
+                    # claude stores no title in the transcript, so fall back to the first real user
+                    # prompt (skip system/command wrappers and the resume caveat) — like claude's own list.
+                    if t == 'user' and fu is None and not o.get('isMeta'):
+                        tx = _utext(o)
+                        if tx and tx[0] != '<' and not tx.startswith('Caveat:'): fu = tx
                     if t == 'assistant':
                         mid = (o.get('message') or {}).get('id')
                         if mid: ids.add(mid)
     except Exception: continue
     if n == 0: continue
-    title = cust or ai or lp or '(untitled)'
+    title = cust or ai or fu or '(untitled)'
+    title = ' '.join(title.split())
     if len(title) > 60: title = title[:57] + '...'
     out.append({'id': os.path.basename(f)[:-6], 'title': title, 'n': n, 'mtime': os.path.getmtime(f), 'cwd': cwd or '', '_ids': sorted(ids), '_f': f})
-out.sort(key=lambda s: len(s['_ids']))
-keep = []
-for i, s in enumerate(out):
-    si = set(s['_ids']); covered = False
-    if si:
-        for j in range(i + 1, len(out)):
-            if si.issubset(set(out[j]['_ids'])): covered = True; break
-    if not covered: keep.append(s)
+# Collapse ONLY exact-duplicate transcripts (identical assistant-message-id sets), keeping the newest.
+# Do NOT drop subsets: a fork copies its parent's message ids then diverges, so the parent is a strict
+# subset of the fork — subset-dedup used to wrongly hide the parent (two sessions collapsed into one).
+best = {}; keep = []
+for s in out:
+    fs = frozenset(s['_ids'])
+    if not fs: keep.append(s); continue
+    if fs not in best or s['mtime'] > best[fs]['mtime']: best[fs] = s
+keep.extend(best.values())
 keep.sort(key=lambda s: s['mtime'], reverse=True)
 files = {s['id']: s['_f'] for s in keep}
 # switcher-side display-name overrides (claude has no post-hoc rename CLI)

@@ -141,9 +141,15 @@ function makeSession(ws, opts) {
     }
     return true;
   });
-  sock.addEventListener('open', () => { if (s.opened) fitSoon(s); updateHdr(); });
+  sock.addEventListener('open', () => { fitSoon(s); updateHdr(); });
   sock.addEventListener('close', () => updateHdr());
-  sock.onmessage = (e) => term.write(e.data);
+  sock.onmessage = (e) => {
+    // First byte from the PTY means the tmux/claude side is live — re-send our real size then, so a
+    // resize that raced the connect (leaving claude drawing at the initial 80x24 → "1/4 screen") is
+    // corrected once. Cheap and idempotent.
+    if (!s.sized) { s.sized = true; fitSoon(s); }
+    term.write(e.data);
+  };
   term.onData((d) => sock.readyState === 1 && sock.send(JSON.stringify({ data: d })));
   term.onBell(() => notifyDone(s));
   el.addEventListener('click', () => s.term.focus());
@@ -161,10 +167,11 @@ function fitSession(s) {
   if (!s || !s.opened) return;
   try { s.fit.fit(); if (s.sock.readyState === 1) s.sock.send(JSON.stringify({ height: s.term.rows, width: s.term.cols })); } catch (_) {}
 }
-// rAF (layout) + a delayed pass (fonts/slow layout) so the first fit lands correctly.
+// rAF (layout) + several delayed passes so the first fit lands even on a slow/cold load or when the
+// PTY proxy is laggy (a single early fit can race the connect and leave claude stuck at 80x24).
 function fitSoon(s) {
   requestAnimationFrame(() => requestAnimationFrame(() => fitSession(s)));
-  setTimeout(() => fitSession(s), 150);
+  [120, 400, 800, 1500].forEach((ms) => setTimeout(() => fitSession(s), ms));
 }
 // Re-fit whenever the terminal area resizes (window, sidebar toggle, address-bar changes).
 try {
@@ -335,9 +342,8 @@ function makeLi(w) {
   }
   li.onclick = async () => {
     if (w.status !== 'running') { if (await uiConfirm({ title: 'Start workspace', message: `Start "${w.name}"?`, ok: 'Start' })) startAndAttach(w.name); return; }
-    // The row opens the workspace's main (default) session. Use the ▸ caret to expand the tree and
-    // reach other sessions. (On mobile, opening main also closes the drawer.)
-    if (!isMobile() && !expanded.has(w.name)) toggleExpand(w.name);
+    // Row = open the workspace's main (default) session. Expansion is ONLY via the ▸ caret, so a
+    // plain click never toggles the tree. (On mobile, opening main also closes the drawer.)
     activate(w.name);
   };
   return li;
