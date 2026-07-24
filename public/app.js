@@ -107,12 +107,12 @@ function updateHdr() {
   renderHdrApps(); renderHdrSess();
 }
 
-// opts: { sid, cwd, isMain, fork, label }. main (isMain) connects to the shared param-less
-// "claude" tmux; a non-main session routes &session/&cwd(/&fork) so the backend launches/attaches
-// its own cl-<id8> tmux — mirrors the (verified) mobile chat.js PTY model exactly.
+// opts: { sid, cwd, isMain, mode, resume, label }. main (isMain) → shared param-less "claude" tmux.
+// Non-main → cl-<sid8>: mode 'open' resumes sid; 'new' creates under sid (--session-id); 'fork'
+// resumes `resume` (parent) with --fork-session under sid. sid is always known up front.
 function makeSession(ws, opts) {
   opts = opts || {};
-  const key = sessKey(ws, opts.isMain ? '' : (opts.fork ? 'fork:' + opts.fork : (opts.sid || (opts.cwd ? 'new:' + opts.cwd : ''))));
+  const key = sessKey(ws, opts.isMain ? '' : (opts.sid || ''));
   const el = document.createElement('div'); el.className = 'termpane'; el.style.height = '100%'; el.style.display = 'none';
   // xterm renders into a padding-free inner box so FitAddon measures a clean area
   // (opening directly onto the padded .termpane made fit ~half a row too tall → clipped).
@@ -130,14 +130,15 @@ function makeSession(ws, opts) {
   const fit = new FitAddon(); term.loadAddon(fit);
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   let url = `${proto}://${location.host}/api/pty?ws=${encodeURIComponent(ws)}&width=80&height=24`;
-  if (!opts.isMain) {
-    if (opts.fork) url += '&session=' + encodeURIComponent(opts.fork) + '&fork=1';
-    else if (opts.sid) url += '&session=' + encodeURIComponent(opts.sid);
-    if (opts.cwd) url += '&cwd=' + encodeURIComponent(opts.cwd);
+  if (!opts.isMain && opts.sid) {
+    url += '&session=' + encodeURIComponent(opts.sid);
+    if (opts.mode === 'new') url += '&mode=new';
+    else if (opts.mode === 'fork') { url += '&mode=fork'; if (opts.resume) url += '&resume=' + encodeURIComponent(opts.resume); }
+    if (opts.cwd && (opts.mode === 'new' || opts.mode === 'fork')) url += '&cwd=' + encodeURIComponent(opts.cwd);
   }
   const sock = new WebSocket(url);
   const name = key;
-  const s = { el, inner, term, sock, fit, opened: false, ws, sid: opts.isMain ? '' : (opts.sid || ''), cwd: opts.cwd || '', isMain: !!opts.isMain, fork: opts.fork || '', label: opts.label || (opts.isMain ? 'main' : '') };
+  const s = { el, inner, term, sock, fit, opened: false, ws, sid: opts.isMain ? '' : (opts.sid || ''), cwd: opts.cwd || '', isMain: !!opts.isMain, label: opts.label || (opts.isMain ? 'main' : '') };
   sessions.set(key, s);
   // Copy/paste: claude runs the TUI in mouse mode, so drag-select needs Shift held.
   // Then Cmd/Ctrl+C copies the selection (only when there is one, so Ctrl+C still
@@ -203,35 +204,35 @@ function isMobile() { return window.innerWidth <= 768; }
 // activate(ws, session)  → open a specific session from the tree (main / existing / fresh create-fork)
 function activate(ws, sess) {
   activeWs = ws; activeSess = sess || null;
+  // The session's own id (known up front, even for create/fork): '' = main.
+  const isMain = !sess || !!sess.main;
+  const ownId = isMain ? '' : (sess.fresh ? sess.sid : sess.id);
   if (isMobile()) {
     // Mobile: embedded chat-bubble view (chat.html) owns the session tree; the sidebar just picks a ws.
-    // key: fresh → its client key; existing non-main → its id; main → '' (so the tree highlights right)
-    active = sess && sess.fresh ? sessKey(ws, sess.fork ? 'fork:' + sess.fork : 'new:' + sess.cwd)
-      : sessKey(ws, (sess && !sess.main && sess.id) ? sess.id : '');
+    active = sessKey(ws, ownId);
     const cf = document.getElementById('chatframe');
     let src = '/chat.html?ws=' + encodeURIComponent(ws);
-    if (sess && sess.fresh) { src += '&freshcwd=' + encodeURIComponent(sess.cwd); if (sess.fork) src += '&forkid=' + encodeURIComponent(sess.fork); }
-    else if (sess && !sess.main && sess.id) src += '&session=' + encodeURIComponent(sess.id);
+    if (sess && sess.fresh) { src += '&sid=' + encodeURIComponent(sess.sid) + '&mode=' + sess.mode + '&freshcwd=' + encodeURIComponent(sess.cwd); if (sess.mode === 'fork') src += '&resume=' + encodeURIComponent(sess.resume); }
+    else if (ownId) src += '&session=' + encodeURIComponent(ownId);
     if (cf.getAttribute('data-src') !== src) { cf.setAttribute('data-src', src); cf.setAttribute('data-ws', ws); cf.src = src; }
     app.classList.add('showchat');
     app.classList.remove('open'); // close the drawer to reveal the chat
     renderList(searchVal()); updateHdr();
     return;
   }
-  // Desktop: per-session terminal. Compute this session's launch options + stable key.
-  const isMain = !sess || !!sess.main;
-  const fresh = !!(sess && sess.fresh);
+  // Desktop: per-session terminal keyed by the session's own id (cl-<id8>).
   const opts = {
     isMain,
-    sid: fresh ? '' : (sess && !sess.main ? sess.id : ''),
+    sid: ownId,
     cwd: sess ? (sess.cwd || '') : '',
-    fork: fresh && sess.fork ? sess.fork : '',
-    label: isMain ? 'main' : (sess && (sess.title || sess.id)) || 'session',
+    mode: sess && sess.fresh ? sess.mode : 'open',
+    resume: sess && sess.fresh && sess.mode === 'fork' ? sess.resume : '',
+    label: isMain ? 'main' : (sess && (sess.title || sess.sid || sess.id)) || 'session',
   };
-  const key = sessKey(ws, isMain ? '' : (opts.fork ? 'fork:' + opts.fork : (opts.sid || (opts.cwd ? 'new:' + opts.cwd : ''))));
+  const key = sessKey(ws, ownId);
   active = key;
   try {
-    const q = '?ws=' + encodeURIComponent(ws) + (opts.sid ? '&session=' + encodeURIComponent(opts.sid) : '');
+    const q = '?ws=' + encodeURIComponent(ws) + (ownId ? '&session=' + encodeURIComponent(ownId) : '');
     history.replaceState(null, '', location.pathname + q);
   } catch (_) {}
   app.classList.remove('showchat');
@@ -419,9 +420,8 @@ function sessSubRows(ws) {
   list.filter((s) => !s.main).forEach((s) => { const p = s.project || '~'; (groups[p] = groups[p] || []).push(s); });
   // a just-created/forked session with no transcript yet → show it provisionally so it doesn't vanish.
   const p = pending.get(ws);
-  if (p) {
-    const already = p.fork ? list.some((s) => s.cwd === p.cwd && !p.seen.has(s.id)) : list.some((s) => s.cwd === p.cwd && !s.main);
-    if (!already) { (groups[p.project] = groups[p.project] || []).push({ _pending: true, title: 'starting…', project: p.project, cwd: p.cwd }); }
+  if (p && !list.some((s) => s.id === p.id)) {
+    (groups[p.project] = groups[p.project] || []).push({ _pending: true, title: p.title || 'starting…', project: p.project, cwd: p.cwd });
   }
   Object.keys(groups).forEach((proj) => {
     const h = document.createElement('li'); h.className = 'sub sub-proj'; h.textContent = proj; rows.push(h);
@@ -451,48 +451,39 @@ async function newSession(ws) {
   });
   if (!proj) return;
   const cwd = '/home/coder/' + proj;
-  const desc = { fresh: true, cwd, title: proj };
-  pending.set(ws, { key: sessKey(ws, 'new:' + cwd), cwd, project: proj, title: proj, desc });
+  const id = crypto.randomUUID();                       // WE choose the session id (--session-id) — no guessing
+  const desc = { fresh: true, mode: 'new', sid: id, cwd, title: proj };
+  pending.set(ws, { id, key: sessKey(ws, id), cwd, project: proj, title: proj, desc });
   activate(ws, desc);
-  adoptLoop(ws);
+  watchPending(ws);
 }
 async function forkSession(ws, s) {
-  // Snapshot the raw transcript ids in the target cwd BEFORE forking, so adopt can tell the new
-  // fork apart from the parent + any resume-chain files already there (all share the same cwd).
-  let seen = new Set();
-  try { const j = await fetch('/api/session/find?ws=' + encodeURIComponent(ws) + '&cwd=' + encodeURIComponent(s.cwd || '')).then((r) => r.json()); seen = new Set((j.ids || []).map((x) => x.id)); } catch (_) {}
-  const desc = { fresh: true, cwd: s.cwd, fork: s.id, title: (s.title || 'session') + ' (fork)' };
-  pending.set(ws, { key: sessKey(ws, 'fork:' + s.id), cwd: s.cwd, project: s.project || projName(s.cwd), title: desc.title, fork: s.id, seen, desc });
+  const id = crypto.randomUUID();                       // the fork's id, chosen up front
+  const title = (s.title || 'session') + ' (fork)';
+  // both ids known immediately → record the fork + its display name now (no adopt-guessing)
+  try { fetch('/api/session/markfork?ws=' + encodeURIComponent(ws), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, parent: s.id }) }); } catch (_) {}
+  try { fetch('/api/session/rename?ws=' + encodeURIComponent(ws), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, name: title }) }); } catch (_) {}
+  const desc = { fresh: true, mode: 'fork', sid: id, resume: s.id, cwd: s.cwd, title };
+  pending.set(ws, { id, key: sessKey(ws, id), cwd: s.cwd, project: s.project || projName(s.cwd), title, desc });
   activate(ws, desc);
-  adoptLoop(ws);
+  watchPending(ws);
 }
-// Poll the cheap per-cwd `find` (no full scan) until the pending session's transcript appears, then
-// adopt it: rename its launch tmux → cl-<id8> (register), rebind its live pane to the real id (so the
-// tree row and the running claude are the same, no orphaned second process), and do ONE full refresh.
-function adoptLoop(ws) {
+// Poll until the pending session's transcript is enumerated, then drop the provisional row. The pane
+// is already keyed by the real id (we chose it), so there's nothing to rebind — the enumerated row
+// (same key) simply replaces the "starting…" placeholder. Server-side signature caching keeps the
+// repeated /api/sessions polls cheap until the new file actually appears.
+function watchPending(ws) {
   let tries = 0;
   const iv = setInterval(async () => {
     tries++;
     const p = pending.get(ws);
     if (!p) { clearInterval(iv); return; }
-    let found = null;
-    try {
-      const j = await fetch('/api/session/find?ws=' + encodeURIComponent(ws) + '&cwd=' + encodeURIComponent(p.cwd)).then((r) => r.json());
-      const cands = (j.ids || []).filter((x) => (p.seen ? !p.seen.has(x.id) : true)).sort((a, b) => b.mtime - a.mtime);
-      found = cands[0] || null; // newest transcript in this cwd that wasn't there before = the new session
-    } catch (_) {}
-    if (found) {
-      try { fetch('/api/session/register?ws=' + encodeURIComponent(ws), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: found.id, cwd: p.cwd, parent: p.fork || '' }) }); } catch (_) {}
-      // give a fork a distinct display name ("<parent> (fork)") so it doesn't collide with its parent
-      if (p.fork && p.title) { try { await fetch('/api/session/rename?ws=' + encodeURIComponent(ws), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: found.id, name: p.title }) }); } catch (_) {} }
-      const pane = sessions.get(p.key); const newKey = sessKey(ws, found.id);
-      if (pane && !sessions.has(newKey)) { sessions.delete(p.key); pane.sid = found.id; pane.isMain = false; sessions.set(newKey, pane); }
-      if (active === p.key) active = newKey;
+    await loadSessions(ws, true);
+    if ((sessCache.get(ws) || []).some((x) => x.id === p.id)) {
       pending.delete(ws); clearInterval(iv);
-      await loadSessions(ws, true); // one full refresh so the tree shows the real, enumerated row
-      if (active === newKey) activeSess = (sessCache.get(ws) || []).find((x) => x.id === found.id) || activeSess;
-      renderList(searchVal()); updateHdr();
+      if (active === p.key) activeSess = (sessCache.get(ws) || []).find((x) => x.id === p.id) || activeSess;
     } else if (tries >= 16) { clearInterval(iv); } // ~40s; keep the provisional row if no turn was sent
+    renderList(searchVal()); updateHdr();
   }, 2500);
 }
 async function renameSession(ws, s) {

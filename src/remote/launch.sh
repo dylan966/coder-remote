@@ -11,4 +11,7 @@ for _i in $(seq 1 30); do command -v claude >/dev/null 2>&1 && break; sleep 1; d
 ARGS=(--dangerously-skip-permissions)
 if [ -n "${SC_NAME_B64:-}" ]; then N="$(printf %s "$SC_NAME_B64" | base64 -d 2>/dev/null)"; [ -n "$N" ] && ARGS+=(--name "$N"); fi
 if [ -n "${SC_RESUME:-}" ]; then ARGS+=(--resume "$SC_RESUME"); [ -n "${SC_FORK:-}" ] && ARGS+=(--fork-session); fi
+# SC_SID: run under a caller-chosen session id (create → --session-id only; fork → alongside
+# --resume/--fork-session). Lets the switcher know the transcript id upfront (no adopt-guessing).
+if [ -n "${SC_SID:-}" ]; then ARGS+=(--session-id "$SC_SID"); fi
 exec claude "${ARGS[@]}"

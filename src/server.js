@@ -77,19 +77,6 @@ const server = http.createServer(async (req, res) => {
         return json({ sessions: listing });
       } catch (e) { return json({ sessions: [], error: String(e.message || e) }); }
     }
-    if (u.pathname === '/api/session/find') {
-      // Cheap adopt probe: list session ids + mtime in just ONE project dir (the cwd being created/
-      // forked into) — globs the dir, reads no files. Used by the frontend adopt loop so it doesn't
-      // full-scan every 2.5s while waiting for a new session's transcript to appear.
-      const wsName = u.searchParams.get('ws');
-      const cwd = /^\/[A-Za-z0-9._/-]+$/.test(u.searchParams.get('cwd') || '') ? u.searchParams.get('cwd') : '';
-      if (!wsName || !cwd) return json({ error: 'bad params' }, 400);
-      const slug = '-' + cwd.replace(/^\//, '').replace(/[/._\\:]/g, '-'); // claude's project-dir naming
-      const cmd = `for f in ~/.claude/projects/'${slug}'/*.jsonl; do [ -e "$f" ] || continue; printf '%s %s\\n' "$(basename "$f" .jsonl)" "$(stat -c %Y "$f" 2>/dev/null || echo 0)"; done`;
-      let out = ''; try { out = await execFileP('coder', ['ssh', wsName, '--', cmd], { timeout: 15000 }); } catch (_) {}
-      const ids = out.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => { const sp = l.split(' '); return { id: sp[0], mtime: parseInt(sp[1], 10) || 0 }; }).filter((x) => /^[0-9a-fA-F-]{8,}$/.test(x.id));
-      return json({ ids });
-    }
     if (u.pathname === '/api/upload' && req.method === 'POST') {
       // receive base64 → temp file → coder cp into the target workspace's ~/.switcher-uploads/, returning the absolute path inside the workspace.
       const wsName = u.searchParams.get('ws');
@@ -151,44 +138,33 @@ const server = http.createServer(async (req, res) => {
       const id = /^[0-9a-fA-F-]{8,}$/.test(b.id || '') ? b.id : '';
       if (!wsName || !id) return json({ error: 'bad params' }, 400);
       const t8 = id.replace(/[^0-9a-fA-F]/g, '').slice(0, 8);
-      // Kill whatever tmux is actually running this session's claude BEFORE removing the transcript,
-      // otherwise the live process just rewrites the file and the session "comes back". The tmux name
-      // varies by how it launched: cl-<id8> (opened), clf-<parentid8> (fork), cln-<cwdkey> (new).
+      // Kill the session's tmux + any claude bound to it (its cmdline carries the id via --session-id
+      // or --resume) BEFORE removing the transcript, else the live process rewrites it and the session
+      // "comes back". The per-session tmux is always cl-<id8> now (see ptyCommand). Legacy clf-/cln-
+      // names are also swept for safety.
       const cmd = `set +e; ID='${id}'; T8='${t8}'; ` +
-        `JP=$(ls ~/.claude/projects/*/"$ID".jsonl 2>/dev/null | head -1); ` +
-        `CWD=$(jq -r 'select(.cwd)|.cwd' "$JP" 2>/dev/null | head -1); ` +
-        `FK=~/.switcher/forks.json; P=$([ -f "$FK" ] && jq -r --arg i "$ID" 'if type==\"object\" then (.[$i] // empty) else empty end' "$FK" 2>/dev/null); ` +
         `for s in "cl-$T8" "clf-$T8"; do tmux kill-session -t "$s" 2>/dev/null; done; ` +
-        `[ -n "$P" ] && tmux kill-session -t "clf-$(printf %s "$P" | tr -cd 0-9a-fA-F | cut -c1-8)" 2>/dev/null; ` +
-        `[ -n "$CWD" ] && tmux kill-session -t "cln-$(printf %s "$CWD" | tr -cd A-Za-z0-9 | tail -c 14)" 2>/dev/null; ` +
-        `pkill -f -- "--resume $ID" 2>/dev/null; ` +
+        `pkill -f -- "$ID" 2>/dev/null; ` +
         `rm -f ~/.claude/projects/*/"$ID".jsonl 2>/dev/null; ` +
         `NF=~/.switcher/names.json; [ -f "$NF" ] && jq --arg i "$ID" 'del(.[$i])' "$NF" >"$NF.t" 2>/dev/null && mv "$NF.t" "$NF"; ` +
-        `[ -f "$FK" ] && jq --arg i "$ID" 'if type==\"object\" then del(.[$i]) else . end' "$FK" >"$FK.t" 2>/dev/null && mv "$FK.t" "$FK"; true`;
+        `FK=~/.switcher/forks.json; [ -f "$FK" ] && jq --arg i "$ID" 'if type==\"object\" then del(.[$i]) else . end' "$FK" >"$FK.t" 2>/dev/null && mv "$FK.t" "$FK"; true`;
       await execFileP('coder', ['ssh', wsName, '--', cmd], { timeout: 20000 });
+      enumCache.delete(wsName);
       return json({ ok: true });
     }
-    if (u.pathname === '/api/session/register' && req.method === 'POST') {
-      // Called once a freshly created/forked session gets its real id. Renames the launch tmux
-      // (cln-<cwdkey> for new, clf-<parentid8> for fork) → cl-<id8>, so REOPENING the session with
-      // `tmux new-session -A -s cl-<id8>` attaches the SAME live claude instead of starting a second
-      // one (which would corrupt the shared transcript). For forks it also records {forkId:parentId}
-      // (drives dedup: a fork never covers its parent — see SESS_PY).
+    if (u.pathname === '/api/session/markfork' && req.method === 'POST') {
+      // Record {forkId: parentId}. Drives dedup (a fork never covers its parent — see SESS_PY) and
+      // lets delete resolve relationships. The switcher chooses the fork's id up front (--session-id),
+      // so this can be called at fork time — no adopt-guessing.
       const wsName = u.searchParams.get('ws');
       let b; try { b = JSON.parse(await readBody(req, 64 * 1024)); } catch (_) { return json({ error: 'bad request' }, 400); }
       const id = /^[0-9a-fA-F-]{8,}$/.test(b.id || '') ? b.id : '';
       const parent = /^[0-9a-fA-F-]{8,}$/.test(b.parent || '') ? b.parent : '';
-      const cwd = /^\/[A-Za-z0-9._/-]+$/.test(b.cwd || '') ? b.cwd : '';
-      if (!wsName || !id) return json({ error: 'bad params' }, 400);
-      const id8 = id.replace(/[^0-9a-fA-F]/g, '').slice(0, 8);
-      const oldName = parent ? ('clf-' + parent.replace(/[^0-9a-fA-F]/g, '').slice(0, 8))
-        : (cwd ? ('cln-' + cwd.replace(/[^A-Za-z0-9]/g, '').slice(-14)) : '');
-      const parts = [];
-      if (oldName) parts.push(`tmux has-session -t ${oldName} 2>/dev/null && tmux rename-session -t ${oldName} cl-${id8} 2>/dev/null`);
-      if (parent) parts.push(`mkdir -p ~/.switcher; F=~/.switcher/forks.json; [ -f "$F" ] || echo '{}' >"$F"; ` +
-        `jq --arg i '${id}' --arg p '${parent}' 'if type==\"object\" then . else {} end | .[$i]=$p' "$F" >"$F.t" && mv "$F.t" "$F"`);
-      parts.push('true');
-      await execFileP('coder', ['ssh', wsName, '--', parts.join('; ')], { timeout: 20000 });
+      if (!wsName || !id || !parent) return json({ error: 'bad params' }, 400);
+      const cmd = `mkdir -p ~/.switcher; F=~/.switcher/forks.json; [ -f "$F" ] || echo '{}' >"$F"; ` +
+        `jq --arg i '${id}' --arg p '${parent}' 'if type==\"object\" then . else {} end | .[$i]=$p' "$F" >"$F.t" && mv "$F.t" "$F"`;
+      await execFileP('coder', ['ssh', wsName, '--', cmd], { timeout: 20000 });
+      enumCache.delete(wsName);
       return json({ ok: true });
     }
     if (u.pathname === '/api/push/key') return json({ key: push.getPublicKey(), enabled: push.isEnabled() });
@@ -250,22 +226,24 @@ async function resolveAgent(fe, name) {
 const LAUNCH_SH = fs.readFileSync(path.join(__dirname, 'remote/launch.sh'), 'utf8'); // self-contained per-session claude launcher (env-driven)
 const LAUNCH_B64 = Buffer.from(LAUNCH_SH, 'utf8').toString('base64');
 
-/** Build the PTY tmux command. No session/cwd → the workspace's own launcher (unchanged).
- *  A specific session/cwd → the self-contained LAUNCH_SH in a per-session tmux `cl-<id8>`. */
-function ptyCommand({ session, cwd, fork, nameB64 }) {
+/** Build the PTY tmux command. `session` is the session's OWN id; the tmux is always cl-<id8>, so
+ *  reopening attaches the same claude (new-session -A). mode: 'open' (default) → --resume <id>;
+ *  'new' → --session-id <id> (fresh, our chosen id); 'fork' → --resume <resume> --fork-session
+ *  --session-id <id>. No session/cwd → the workspace's own launcher (main, unchanged). */
+function ptyCommand({ session, cwd, mode, resume, nameB64 }) {
   const sid = /^[0-9a-fA-F-]{8,}$/.test(session || '') ? session : '';
   if (!sid && !cwd) return config.claudeCmd; // main / default click — untouched
   const safeCwd = /^\/[A-Za-z0-9._/-]+$/.test(cwd || '') ? cwd : '';       // validated abs path
   const sid8 = sid.replace(/[^0-9a-fA-F]/g, '').slice(0, 8);
-  const cwdKey = safeCwd.replace(/[^A-Za-z0-9]/g, '').slice(-14);
-  // tmux name: fork → clf-<orig> (distinct from the original's tmux); resume → cl-<id>;
-  // create (cwd only) → cln-<cwdhash> (distinct from main's "claude").
-  const tmux = fork ? ('clf-' + sid8) : (sid ? ('cl-' + sid8) : (safeCwd ? 'cln-' + cwdKey : 'claude'));
+  const parent = /^[0-9a-fA-F-]{8,}$/.test(resume || '') ? resume : '';
+  const tmux = sid ? ('cl-' + sid8) : (safeCwd ? 'cln-' + safeCwd.replace(/[^A-Za-z0-9]/g, '').slice(-14) : 'claude');
   const nb = /^[A-Za-z0-9+/=]+$/.test(nameB64 || '') ? nameB64 : '';       // base64 charset only
   const exportsBlk = [
     safeCwd && `export SC_CWD='${safeCwd}'`,
-    sid && `export SC_RESUME='${sid}'`,
-    fork && 'export SC_FORK=1',
+    mode === 'fork' && parent && `export SC_RESUME='${parent}'`,           // fork resumes the parent
+    mode === 'fork' && 'export SC_FORK=1',
+    (mode === 'new' || mode === 'fork') && sid && `export SC_SID='${sid}'`, // create/fork under our chosen id
+    !(mode === 'new' || mode === 'fork') && sid && `export SC_RESUME='${sid}'`, // open → resume itself
     nb && `export SC_NAME_B64='${nb}'`,
   ].filter(Boolean).join('\n');
   const b64 = Buffer.from(exportsBlk + '\n' + LAUNCH_SH, 'utf8').toString('base64');
@@ -280,7 +258,8 @@ ptyWss.on('connection', async (fe, req) => {
   const height = parseInt(u.searchParams.get('height'), 10) || 30;
   const session = u.searchParams.get('session');
   const cwd = u.searchParams.get('cwd');
-  const fork = u.searchParams.get('fork');
+  const mode = u.searchParams.get('mode');    // 'new' | 'fork' | (default) 'open'
+  const resume = u.searchParams.get('resume'); // fork: the parent id to resume from
   const nameB64 = u.searchParams.get('name'); // base64 display name (create/fork)
 
   let pty = null;
@@ -293,7 +272,7 @@ ptyWss.on('connection', async (fe, req) => {
     const agentId = await resolveAgent(fe, name);
     if (!agentId || feClosed) return;
     maybeReap(name);
-    pty = client.openPty({ agentId, width, height, command: ptyCommand({ session, cwd, fork, nameB64 }) });
+    pty = client.openPty({ agentId, width, height, command: ptyCommand({ session, cwd, mode, resume, nameB64 }) });
     pty.onError(() => { try { fe.close(1011); } catch (_) {} });
     pty.onData((s) => { if (fe.readyState === fe.OPEN) fe.send(s); });     // Coder → frontend (text)
     pty.onClose(() => fe.close());

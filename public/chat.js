@@ -190,14 +190,13 @@ const _q = new URLSearchParams(location.search);
 let currentSession = _q.get('session') || null;
 let currentCwd = '';
 let currentIsMain = !currentSession;   // default click = main session (shares the "claude" tmux with the desktop terminal)
-let freshMode = false;                 // create/fork: follow the newest session file until it's adopted
-let ptyExtra = {};                     // {cwd, fork} for the create/fork PTY launch
-let freshSeen = null;                  // session ids present at fork time (to pick the NEW one, not the parent)
-// The sidebar's "New session" / provisional row deep-links here with a fresh cwd (and fork id):
-// enter freshMode so this chat launches/follows that session rather than the workspace's main.
-if (_q.get('freshcwd')) {
-  currentSession = null; currentIsMain = false; freshMode = true; currentCwd = _q.get('freshcwd');
-  ptyExtra = _q.get('forkid') ? { cwd: currentCwd, fork: _q.get('forkid') } : { cwd: currentCwd };
+let freshMode = false;                 // create/fork: the transcript doesn't exist until the first turn
+let ptyExtra = {};                     // {cwd, mode:'new'|'fork', resume} for the create/fork PTY launch
+// Deep-link from the sidebar's create / fork (id chosen up front via --session-id): open that exact
+// session id. freshMode just means "transcript not written yet" (chat tail stays empty until then).
+if (_q.get('sid') && _q.get('mode')) {
+  currentSession = _q.get('sid'); currentIsMain = false; freshMode = true; currentCwd = _q.get('freshcwd') || '';
+  ptyExtra = { cwd: currentCwd, mode: _q.get('mode'), resume: _q.get('resume') || '' };
 }
 
 function closePanel() { sesspanel.classList.remove('show'); }
@@ -232,19 +231,9 @@ function renderSessions(list) {
     return;
   }
   const e = log.querySelector('.empty'); if (e) e.remove();
-  // adopt the new session only once it appears with our target cwd (a fresh session with no
-  // messages yet isn't enumerated). Until then stay in freshMode (chat follows the newest file).
-  if (freshMode) {
-    const isFork = !!ptyExtra.fork;
-    const nw = isFork
-      ? sessions.find((s) => s.cwd === currentCwd && s.id !== ptyExtra.fork && (!freshSeen || !freshSeen.has(s.id)))
-      : sessions.find((s) => s.cwd === currentCwd);
-    if (nw) {
-      // rename the launch tmux → cl-<id8> (reopen attaches the same claude) + record forks for dedup
-      try { fetch('/api/session/register?ws=' + encodeURIComponent(wsName), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: nw.id, cwd: currentCwd, parent: isFork ? ptyExtra.fork : '' }) }); } catch (_) {}
-      currentSession = nw.id; currentIsMain = !!nw.main; freshMode = false; ptyExtra = {}; freshSeen = null;
-    }
-  }
+  // We already know the id (chosen via --session-id); once its transcript is enumerated, leave
+  // freshMode so the chat tails it normally. No cwd-guessing.
+  if (freshMode && currentSession && sessions.some((s) => s.id === currentSession)) { freshMode = false; ptyExtra = {}; }
   if (!currentSession) { const m = sessions.find((s) => s.main) || sessions[0]; currentSession = m.id; currentCwd = m.cwd; currentIsMain = !!m.main; }
   updateSessBtn();
   if (sesspanel.classList.contains('show')) buildPanel();
@@ -284,14 +273,17 @@ async function onNew() {
   });
   if (!proj) return;
   closePanel();
-  currentSession = null; currentIsMain = false; freshMode = true; currentCwd = '/home/coder/' + proj; ptyExtra = { cwd: currentCwd };
+  currentSession = crypto.randomUUID(); currentIsMain = false; freshMode = true;   // WE choose the id (--session-id)
+  currentCwd = '/home/coder/' + proj; ptyExtra = { cwd: currentCwd, mode: 'new' };
   reconnectAll();
-  setTimeout(() => { closeChat(); openChat(); }, 2500); // re-enumerate to adopt the new session
+  setTimeout(() => { closeChat(); openChat(); }, 2500); // re-enumerate so the new session lists
 }
 function forkSession(s) {
   closePanel();
-  freshSeen = new Set(sessions.map((x) => x.id)); // remember pre-fork ids so we adopt the NEW branch, not the parent
-  currentSession = null; currentIsMain = false; freshMode = true; currentCwd = s.cwd || ''; ptyExtra = { cwd: s.cwd, fork: s.id };
+  const id = crypto.randomUUID(); const title = (s.title || 'session') + ' (fork)';
+  try { fetch('/api/session/markfork?ws=' + encodeURIComponent(wsName), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, parent: s.id }) }); } catch (_) {}
+  try { fetch('/api/session/rename?ws=' + encodeURIComponent(wsName), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, name: title }) }); } catch (_) {}
+  currentSession = id; currentIsMain = false; freshMode = true; currentCwd = s.cwd || ''; ptyExtra = { cwd: s.cwd, mode: 'fork', resume: s.id };
   reconnectAll();
   setTimeout(() => { closeChat(); openChat(); }, 2500);
 }
@@ -420,13 +412,13 @@ function closePty() { clearTimeout(ptyTimer); if (pty) { pty._intentional = true
 function openPty() {
   clearTimeout(ptyTimer);
   let url = `${proto}://${location.host}/api/pty?ws=${encodeURIComponent(wsName)}&width=80&height=24`;
-  if (!currentIsMain) {
-    // non-main session: attach its own tmux (resume / create / fork). Main stays param-less →
-    // the shared "claude" tmux, so mobile chat and the desktop terminal are the same conversation.
-    if (ptyExtra.fork) url += '&session=' + encodeURIComponent(ptyExtra.fork) + '&fork=1';
-    else if (currentSession) url += '&session=' + encodeURIComponent(currentSession);
-    const cw = ptyExtra.cwd || currentCwd;
-    if (cw) url += '&cwd=' + encodeURIComponent(cw);
+  if (!currentIsMain && currentSession) {
+    // non-main session: attach its own tmux cl-<id8> (open→resume, new→--session-id, fork→resume
+    // parent + --fork-session under our id). Main stays param-less → the shared "claude" tmux.
+    url += '&session=' + encodeURIComponent(currentSession);
+    if (ptyExtra.mode === 'new') url += '&mode=new';
+    else if (ptyExtra.mode === 'fork') { url += '&mode=fork'; if (ptyExtra.resume) url += '&resume=' + encodeURIComponent(ptyExtra.resume); }
+    if (ptyExtra.cwd && (ptyExtra.mode === 'new' || ptyExtra.mode === 'fork')) url += '&cwd=' + encodeURIComponent(ptyExtra.cwd);
   }
   pty = new WebSocket(url); pty._intentional = false;
   pty.onopen = () => { ptyBackoff = 1000; };
