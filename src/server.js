@@ -127,10 +127,21 @@ const server = http.createServer(async (req, res) => {
       let b; try { b = JSON.parse(await readBody(req, 64 * 1024)); } catch (_) { return json({ error: 'bad request' }, 400); }
       const id = /^[0-9a-fA-F-]{8,}$/.test(b.id || '') ? b.id : '';
       if (!wsName || !id) return json({ error: 'bad params' }, 400);
-      const t = 'cl-' + id.replace(/[^0-9a-fA-F]/g, '').slice(0, 8);
-      // remove the session's transcript(s) + kill its tmux + drop its name override
-      const cmd = `rm -f ~/.claude/projects/*/'${id}'.jsonl 2>/dev/null; tmux kill-session -t ${t} 2>/dev/null; ` +
-        `F=~/.switcher/names.json; [ -f "$F" ] && jq --arg i '${id}' 'del(.[$i])' "$F" >"$F.t" 2>/dev/null && mv "$F.t" "$F"; true`;
+      const t8 = id.replace(/[^0-9a-fA-F]/g, '').slice(0, 8);
+      // Kill whatever tmux is actually running this session's claude BEFORE removing the transcript,
+      // otherwise the live process just rewrites the file and the session "comes back". The tmux name
+      // varies by how it launched: cl-<id8> (opened), clf-<parentid8> (fork), cln-<cwdkey> (new).
+      const cmd = `set +e; ID='${id}'; T8='${t8}'; ` +
+        `JP=$(ls ~/.claude/projects/*/"$ID".jsonl 2>/dev/null | head -1); ` +
+        `CWD=$(jq -r 'select(.cwd)|.cwd' "$JP" 2>/dev/null | head -1); ` +
+        `FK=~/.switcher/forks.json; P=$([ -f "$FK" ] && jq -r --arg i "$ID" 'if type==\"object\" then (.[$i] // empty) else empty end' "$FK" 2>/dev/null); ` +
+        `for s in "cl-$T8" "clf-$T8"; do tmux kill-session -t "$s" 2>/dev/null; done; ` +
+        `[ -n "$P" ] && tmux kill-session -t "clf-$(printf %s "$P" | tr -cd 0-9a-fA-F | cut -c1-8)" 2>/dev/null; ` +
+        `[ -n "$CWD" ] && tmux kill-session -t "cln-$(printf %s "$CWD" | tr -cd A-Za-z0-9 | tail -c 14)" 2>/dev/null; ` +
+        `pkill -f -- "--resume $ID" 2>/dev/null; ` +
+        `rm -f ~/.claude/projects/*/"$ID".jsonl 2>/dev/null; ` +
+        `NF=~/.switcher/names.json; [ -f "$NF" ] && jq --arg i "$ID" 'del(.[$i])' "$NF" >"$NF.t" 2>/dev/null && mv "$NF.t" "$NF"; ` +
+        `[ -f "$FK" ] && jq --arg i "$ID" 'if type==\"object\" then del(.[$i]) else . end' "$FK" >"$FK.t" 2>/dev/null && mv "$FK.t" "$FK"; true`;
       await execFileP('coder', ['ssh', wsName, '--', cmd], { timeout: 20000 });
       return json({ ok: true });
     }
@@ -140,9 +151,12 @@ const server = http.createServer(async (req, res) => {
       const wsName = u.searchParams.get('ws');
       let b; try { b = JSON.parse(await readBody(req, 64 * 1024)); } catch (_) { return json({ error: 'bad request' }, 400); }
       const id = /^[0-9a-fA-F-]{8,}$/.test(b.id || '') ? b.id : '';
+      const parent = /^[0-9a-fA-F-]{8,}$/.test(b.parent || '') ? b.parent : '';
       if (!wsName || !id) return json({ error: 'bad params' }, 400);
-      const cmd = `mkdir -p ~/.switcher; F=~/.switcher/forks.json; [ -f "$F" ] || echo '[]' >"$F"; ` +
-        `jq --arg i '${id}' '(. + [$i]) | unique' "$F" >"$F.t" && mv "$F.t" "$F"`;
+      // Store {forkId: parentId}: the id set drives dedup (a fork never covers its parent), and the
+      // parent lets delete find the fork's tmux (clf-<parentid8>). Migrate any legacy array form.
+      const cmd = `mkdir -p ~/.switcher; F=~/.switcher/forks.json; [ -f "$F" ] || echo '{}' >"$F"; ` +
+        `jq --arg i '${id}' --arg p '${parent}' 'if type==\"object\" then . else {} end | .[$i]=$p' "$F" >"$F.t" && mv "$F.t" "$F"`;
       await execFileP('coder', ['ssh', wsName, '--', cmd], { timeout: 20000 });
       return json({ ok: true });
     }
@@ -324,7 +338,8 @@ for f in glob.glob(base + '/*/*.jsonl'):
 # never allowed to "cover" (drop) another session, so a fork and its parent both survive.
 forks = set()
 try:
-    with open(os.path.expanduser('~/.switcher/forks.json')) as ff: forks = set(json.load(ff))
+    with open(os.path.expanduser('~/.switcher/forks.json')) as ff: _fk = json.load(ff)
+    forks = set(_fk.keys()) if isinstance(_fk, dict) else set(_fk)
 except Exception: forks = set()
 out.sort(key=lambda s: len(s['_ids']))
 keep = []

@@ -35,22 +35,24 @@ EOSH
 chmod +x /home/coder/.start-claude.sh
 log "wrote /home/coder/.start-claude.sh (claude bypass @ /home/coder)"
 
-# Tell claude about the two proxied ports + their public URLs (user-global memory, always loaded).
+# Tell claude about the three proxied ports + their public URLs + access levels (user-global memory).
 mkdir -p /home/coder/.claude
 cat >/home/coder/.claude/CLAUDE.md <<EOF
 # scratch workspace — networking (important)
 
-This workspace exposes exactly **two ports** through Coder's public wildcard domain.
-When you run a dev server, use these ports so it is reachable from the browser:
+This workspace exposes **three ports** through Coder's public wildcard domain, each with a
+different access level. When you run a server, pick the port matching who should reach it:
 
-- **Web / frontend → port 3000** → public URL: ${WEB_PUBLIC_URL:-https://web--scratch--<owner>.coder.gmaster888.com}
-- **API / backend → port 8000** → public URL: ${API_PUBLIC_URL:-https://api--scratch--<owner>.coder.gmaster888.com}
+- **:80 → public** (anyone with the link, no login) → ${SITE_PUBLIC_URL:-https://site--scratch--<owner>.coder.gmaster888.com}
+- **:3000 → authenticated** (any logged-in Coder user) → ${WEB_PUBLIC_URL:-https://web--scratch--<owner>.coder.gmaster888.com}
+- **:8000 → owner-only** (just the owner) → ${API_PUBLIC_URL:-https://api--scratch--<owner>.coder.gmaster888.com}
 
-Bind to localhost:3000 / localhost:8000 (Coder proxies them). **Other ports are NOT
-proxied** (no public URL), so prefer 3000/8000. Opening these URLs requires the owner to
-be logged into Coder. These links also appear in the "Workspaces 切换器" quick-links.
+Bind to localhost:80 / :3000 / :8000 (Coder proxies them). **Other ports are NOT proxied.**
+Note: port 80 is privileged — a non-root process usually cannot bind it; run the public server
+with the right capability (e.g. \`sudo setcap 'cap_net_bind_service=+ep' \$(command -v node)\`) or
+serve the public site on 3000/8000 instead. These links also appear in the switcher quick-links.
 EOF
-log "wrote /home/coder/.claude/CLAUDE.md (port + public-url guidance)"
+log "wrote /home/coder/.claude/CLAUDE.md (port + public-url + access-level guidance)"
 
 cat <<'EOF'
 

@@ -3,7 +3,8 @@
 # =============================================================================
 # Full toolchain image (node/python/ripgrep/uv/claude/claude-hud/code-server), no
 # switcher service. Reached via the coder-remote switcher (?ws=scratch) for claude,
-# or the "VS Code (Web)" app to edit. Pre-wired Web(:3000)/API(:8000) quick-links.
+# or the "VS Code (Web)" app to edit. Pre-wired quick-links: Site(:80 public) /
+# Web(:3000 authenticated) / API(:8000 owner).
 #
 # One-time setup (run on Mac):
 #   coder templates push scratch -d template/scratch --yes
@@ -28,6 +29,7 @@ locals {
   # Public wildcard URLs for the pre-wired ports (same host format as the switcher/apps).
   access_host = replace(replace(data.coder_workspace.me.access_url, "https://", ""), "http://", "")
   app_suffix  = "--${lower(data.coder_workspace.me.name)}--${lower(data.coder_workspace_owner.me.name)}.${local.access_host}"
+  site_url    = "https://site${local.app_suffix}"
   web_url     = "https://web${local.app_suffix}"
   api_url     = "https://api${local.app_suffix}"
 }
@@ -40,6 +42,7 @@ resource "coder_agent" "main" {
     CODER_URL           = data.coder_workspace.me.access_url
     CODER_OWNER_NAME    = local.owner_name
     CODER_OWNER_EMAIL   = data.coder_workspace_owner.me.email
+    SITE_PUBLIC_URL     = local.site_url
     WEB_PUBLIC_URL      = local.web_url
     API_PUBLIC_URL      = local.api_url
     DISABLE_AUTOUPDATER = "1" # claude-code is system-installed (root) → its self-update can't write; update via image rebuild
@@ -110,16 +113,32 @@ resource "coder_app" "claude" {
 
 # ---- Pre-wired service quick-links (show up in the switcher; work once you run a
 # dev server on the port). No healthcheck — these are on-demand.
+# Three pre-wired ports with three access levels:
+#   :80  → public        (anyone with the link, no Coder login)
+#   :3000 → authenticated (any logged-in Coder user)
+#   :8000 → owner         (only this workspace's owner)
+resource "coder_app" "site" {
+  agent_id     = coder_agent.main.id
+  slug         = "site"
+  display_name = "Site (:80)"
+  url          = "http://localhost:80"
+  icon         = "/emojis/1f310.png" # 🌐
+  subdomain    = true
+  share        = "public"
+  open_in      = "tab"
+  order        = 1
+}
+
 resource "coder_app" "web" {
   agent_id     = coder_agent.main.id
   slug         = "web"
   display_name = "Web (:3000)"
   url          = "http://localhost:3000"
-  icon         = "/emojis/1f310.png" # 🌐
+  icon         = "/emojis/1f5a5.png" # 🖥
   subdomain    = true
-  share        = "owner"
+  share        = "authenticated"
   open_in      = "tab"
-  order        = 1
+  order        = 2
 }
 
 resource "coder_app" "api" {
@@ -131,7 +150,7 @@ resource "coder_app" "api" {
   subdomain    = true
   share        = "owner"
   open_in      = "tab"
-  order        = 2
+  order        = 3
 }
 
 # ---- Image + volume + container ------------------------------------------------
