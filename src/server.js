@@ -233,13 +233,9 @@ const LAUNCH_B64 = Buffer.from(LAUNCH_SH, 'utf8').toString('base64');
  *  reopening attaches the same claude (new-session -A). mode: 'open' (default) → --resume <id>;
  *  'new' → --session-id <id> (fresh, our chosen id); 'fork' → --resume <resume> --fork-session
  *  --session-id <id>. No session/cwd → the workspace's own launcher (main, unchanged). */
-function ptyCommand({ session, cwd, mode, resume, nameB64, width, height }) {
+function ptyCommand({ session, cwd, mode, resume, nameB64 }) {
   const sid = /^[0-9a-fA-F-]{8,}$/.test(session || '') ? session : '';
   if (!sid && !cwd) return config.claudeCmd; // main / default click — untouched
-  // Create the tmux pane with an explicit size: claude's TUI exits immediately if it launches on a
-  // zero-size pane (which happens when the attaching client's size hasn't arrived yet — a race).
-  const w = Math.min(Math.max(parseInt(width, 10) || 120, 80), 500);
-  const h = Math.min(Math.max(parseInt(height, 10) || 40, 24), 300);
   const safeCwd = /^\/[A-Za-z0-9._/-]+$/.test(cwd || '') ? cwd : '';       // validated abs path
   const sid8 = sid.replace(/[^0-9a-fA-F]/g, '').slice(0, 8);
   const parent = /^[0-9a-fA-F-]{8,}$/.test(resume || '') ? resume : '';
@@ -254,7 +250,7 @@ function ptyCommand({ session, cwd, mode, resume, nameB64, width, height }) {
     nb && `export SC_NAME_B64='${nb}'`,
   ].filter(Boolean).join('\n');
   const b64 = Buffer.from(exportsBlk + '\n' + LAUNCH_SH, 'utf8').toString('base64');
-  return `tmux new-session -A -x ${w} -y ${h} -s ${tmux} bash -lc "printf %s '${b64}' | base64 -d | bash" \\; set -t ${tmux} status off`;
+  return `tmux new-session -A -s ${tmux} bash -lc "printf %s '${b64}' | base64 -d | bash" \\; set -t ${tmux} status off`;
 }
 
 ptyWss.on('connection', async (fe, req) => {
@@ -279,7 +275,7 @@ ptyWss.on('connection', async (fe, req) => {
     const agentId = await resolveAgent(fe, name);
     if (!agentId || feClosed) return;
     maybeReap(name);
-    pty = client.openPty({ agentId, width, height, command: ptyCommand({ session, cwd, mode, resume, nameB64, width, height }) });
+    pty = client.openPty({ agentId, width, height, command: ptyCommand({ session, cwd, mode, resume, nameB64 }) });
     pty.onError(() => { try { fe.close(1011); } catch (_) {} });
     pty.onData((s) => { if (fe.readyState === fe.OPEN) fe.send(s); });     // Coder → frontend (text)
     pty.onClose(() => fe.close());
