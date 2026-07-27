@@ -14,6 +14,4 @@ if [ -n "${SC_RESUME:-}" ]; then ARGS+=(--resume "$SC_RESUME"); [ -n "${SC_FORK:
 # SC_SID: run under a caller-chosen session id (create → --session-id only; fork → alongside
 # --resume/--fork-session). Lets the switcher know the transcript id upfront (no adopt-guessing).
 if [ -n "${SC_SID:-}" ]; then ARGS+=(--session-id "$SC_SID"); fi
-# stdin is the pipe this script was read from (… | base64 -d | bash), now at EOF; an interactive
-# claude on an EOF stdin quits immediately. Reattach stdin to the pane's terminal so it stays interactive.
-exec claude "${ARGS[@]}" </dev/tty
+exec claude "${ARGS[@]}"

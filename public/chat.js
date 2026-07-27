@@ -418,7 +418,8 @@ function openPty() {
     url += '&session=' + encodeURIComponent(currentSession);
     if (ptyExtra.mode === 'new') url += '&mode=new';
     else if (ptyExtra.mode === 'fork') { url += '&mode=fork'; if (ptyExtra.resume) url += '&resume=' + encodeURIComponent(ptyExtra.resume); }
-    if (ptyExtra.cwd && (ptyExtra.mode === 'new' || ptyExtra.mode === 'fork')) url += '&cwd=' + encodeURIComponent(ptyExtra.cwd);
+    const cw = ptyExtra.cwd || currentCwd; // open needs cwd too, so --resume runs in the session's project dir
+    if (cw) url += '&cwd=' + encodeURIComponent(cw);
   }
   pty = new WebSocket(url); pty._intentional = false;
   pty.onopen = () => { ptyBackoff = 1000; };

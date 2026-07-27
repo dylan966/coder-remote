@@ -134,7 +134,7 @@ function makeSession(ws, opts) {
     url += '&session=' + encodeURIComponent(opts.sid);
     if (opts.mode === 'new') url += '&mode=new';
     else if (opts.mode === 'fork') { url += '&mode=fork'; if (opts.resume) url += '&resume=' + encodeURIComponent(opts.resume); }
-    if (opts.cwd && (opts.mode === 'new' || opts.mode === 'fork')) url += '&cwd=' + encodeURIComponent(opts.cwd);
+    if (opts.cwd) url += '&cwd=' + encodeURIComponent(opts.cwd); // also for OPEN: cd to the project so --resume finds it
   }
   const sock = new WebSocket(url);
   const name = key;

@@ -242,7 +242,7 @@ function ptyCommand({ session, cwd, mode, resume, nameB64 }) {
   const tmux = sid ? ('cl-' + sid8) : (safeCwd ? 'cln-' + safeCwd.replace(/[^A-Za-z0-9]/g, '').slice(-14) : 'claude');
   const nb = /^[A-Za-z0-9+/=]+$/.test(nameB64 || '') ? nameB64 : '';       // base64 charset only
   const exportsBlk = [
-    safeCwd && `export SC_CWD='${safeCwd}'`,
+    safeCwd && `export SC_CWD='${safeCwd}'`,                                // cd here so --resume finds the session's project
     mode === 'fork' && parent && `export SC_RESUME='${parent}'`,           // fork resumes the parent
     mode === 'fork' && 'export SC_FORK=1',
     (mode === 'new' || mode === 'fork') && sid && `export SC_SID='${sid}'`, // create/fork under our chosen id
